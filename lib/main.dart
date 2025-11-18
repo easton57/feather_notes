@@ -1,11 +1,26 @@
 import 'dart:ui' as ui;
-
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'database_helper.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize SQLite for desktop platforms
+  // Note: This will show a warning about changing the default factory,
+  // which is expected and necessary for desktop platforms
+  if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+  
   runApp(const NotesApp());
 }
 
@@ -92,21 +107,219 @@ class NotesHomePage extends StatefulWidget {
 }
 
 class _NotesHomePageState extends State<NotesHomePage> {
-  final List<String> notes = [
-    'New Note',
-  ];
-
+  final List<Map<String, dynamic>> notes = []; // {id, title}
   int selectedIndex = 0;
   int? _editingIndex;
   final Map<int, TextEditingController> _noteControllers = {};
   final Map<int, NoteCanvasData> _noteCanvasData = {};
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    // Initialize the first note with empty canvas data
-    if (_noteCanvasData[0] == null) {
-      _noteCanvasData[0] = NoteCanvasData();
+    _loadNotes();
+  }
+
+  Future<void> _loadNotes() async {
+    try {
+      final notesList = await DatabaseHelper.instance.getAllNotes();
+      final List<Map<String, dynamic>> loadedNotes = [];
+      final Map<int, NoteCanvasData> loadedCanvasData = {};
+      
+      // Load all notes and their canvas data before setting state
+      for (final n in notesList) {
+        final noteId = n['id'] as int;
+        loadedNotes.add({
+          'id': noteId,
+          'title': n['title'] as String,
+        });
+        
+        // Load canvas data for each note to ensure correct alignment
+        try {
+          final data = await DatabaseHelper.instance.loadCanvasData(noteId);
+          // Create a deep copy to avoid reference sharing
+          loadedCanvasData[noteId] = NoteCanvasData(
+            strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+            textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+            matrix: Matrix4.copy(data.matrix),
+            scale: data.scale,
+          );
+        } catch (e) {
+          // If loading fails, use empty canvas data
+          loadedCanvasData[noteId] = NoteCanvasData();
+        }
+      }
+      
+      setState(() {
+        notes.clear();
+        notes.addAll(loadedNotes);
+        _noteCanvasData.clear();
+        _noteCanvasData.addAll(loadedCanvasData);
+        
+        // If no notes exist, create a default one
+        if (notes.isEmpty) {
+          _createDefaultNote();
+        } else {
+          selectedIndex = 0;
+        }
+        _isLoading = false;
+      });
+    } catch (e) {
+      // If database doesn't exist yet, create default note
+      if (notes.isEmpty) {
+        await _createDefaultNote();
+      }
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _createDefaultNote() async {
+    final noteId = await DatabaseHelper.instance.createNote('New Note');
+    setState(() {
+      notes.add({'id': noteId, 'title': 'New Note'});
+      selectedIndex = 0;
+      _noteCanvasData[noteId] = NoteCanvasData();
+    });
+  }
+
+  Future<void> _loadNoteData(int noteId) async {
+    // Always reload from database to ensure we have the latest data and correct alignment
+    try {
+      final data = await DatabaseHelper.instance.loadCanvasData(noteId);
+      // Create a deep copy to avoid reference sharing between notes
+      setState(() {
+        _noteCanvasData[noteId] = NoteCanvasData(
+          strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+          textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+          matrix: Matrix4.copy(data.matrix),
+          scale: data.scale,
+        );
+      });
+    } catch (e) {
+      // If loading fails, use empty canvas data
+      setState(() {
+        _noteCanvasData[noteId] = NoteCanvasData();
+      });
+    }
+  }
+
+  Future<void> _saveNoteData(int noteId, NoteCanvasData data) async {
+    // Create a deep copy before storing to avoid reference sharing
+    final dataCopy = NoteCanvasData(
+      strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+      textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+      matrix: Matrix4.copy(data.matrix),
+      scale: data.scale,
+    );
+    _noteCanvasData[noteId] = dataCopy;
+    await DatabaseHelper.instance.saveCanvasData(noteId, dataCopy);
+  }
+
+  Future<void> _deleteNote(BuildContext context, int index, int noteId) async {
+    // Don't allow deleting if it's the only note
+    if (notes.length <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Cannot delete the last note'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Note'),
+        content: Text('Are you sure you want to delete "${notes[index]['title']}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      try {
+        // Delete from database
+        await DatabaseHelper.instance.deleteNote(noteId);
+        
+        // Determine new selectedIndex before removing the note
+        int newSelectedIndex = selectedIndex;
+        if (selectedIndex >= notes.length - 1) {
+          // If deleting the last note or beyond, select the new last note
+          newSelectedIndex = notes.length - 2;
+        } else if (selectedIndex > index) {
+          // If we deleted a note before the selected one, adjust index down
+          newSelectedIndex = selectedIndex - 1;
+        } else if (selectedIndex == index) {
+          // If we deleted the currently selected note, stay at same index (which will be the next note)
+          newSelectedIndex = selectedIndex;
+          if (newSelectedIndex >= notes.length - 1) {
+            newSelectedIndex = notes.length - 2;
+          }
+        }
+        
+        // Clean up controllers
+        _noteControllers[noteId]?.dispose();
+        _noteControllers.remove(noteId);
+        
+        // Remove canvas data
+        _noteCanvasData.remove(noteId);
+        
+        // Remove from notes list
+        notes.removeAt(index);
+        
+        // Update selectedIndex and reload all notes' data to ensure correct alignment
+        setState(() {
+          selectedIndex = newSelectedIndex.clamp(0, notes.length - 1);
+        });
+        
+        // Reload all notes' canvas data to ensure correct alignment after deletion
+        for (final note in notes) {
+          final id = note['id'] as int;
+          await _loadNoteData(id);
+        }
+        
+        // Ensure the selected note's data is loaded
+        if (selectedIndex >= 0 && selectedIndex < notes.length) {
+          final newNoteId = notes[selectedIndex]['id'] as int;
+          await _loadNoteData(newNoteId);
+        }
+        
+        // Force a rebuild to update the UI
+        if (mounted) {
+          setState(() {});
+        }
+        
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Note deleted'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to delete note: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
     }
   }
 
@@ -115,7 +328,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
     return Scaffold(
       backgroundColor: Theme.of(context).canvasColor,
       appBar: AppBar(
-        title: Text(selectedIndex < notes.length ? notes[selectedIndex] : 'Infinite Notes'),
+        title: Text(_isLoading 
+          ? 'Loading...' 
+          : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes')),
         leading: Builder(
           builder: (context) => IconButton(
             icon: const Icon(Icons.menu),
@@ -139,78 +354,114 @@ class _NotesHomePageState extends State<NotesHomePage> {
               child: ListView.builder(
                 itemCount: notes.length,
                 itemBuilder: (context, i) {
+                  final noteId = notes[i]['id'] as int;
                   if (_editingIndex == i) {
-                    if (!_noteControllers.containsKey(i)) {
-                      _noteControllers[i] = TextEditingController(text: notes[i]);
+                    if (!_noteControllers.containsKey(noteId)) {
+                      _noteControllers[noteId] = TextEditingController(text: notes[i]['title'] as String);
                     }
                     return ListTile(
                       title: TextField(
-                        controller: _noteControllers[i],
+                        controller: _noteControllers[noteId],
                         autofocus: true,
                         style: const TextStyle(fontSize: 16),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           isDense: true,
                         ),
-                        onSubmitted: (value) {
-                          setState(() {
-                            if (value.trim().isNotEmpty) {
-                              notes[i] = value.trim();
-                            }
-                            _editingIndex = null;
-                            _noteControllers[i]?.dispose();
-                            _noteControllers.remove(i);
-                          });
+                        onSubmitted: (value) async {
+                          if (value.trim().isNotEmpty) {
+                            await DatabaseHelper.instance.updateNoteTitle(noteId, value.trim());
+                            setState(() {
+                              notes[i]['title'] = value.trim();
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          } else {
+                            setState(() {
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          }
                         },
-                        onEditingComplete: () {
-                          setState(() {
-                            final value = _noteControllers[i]?.text.trim() ?? '';
-                            if (value.isNotEmpty) {
-                              notes[i] = value;
-                            }
-                            _editingIndex = null;
-                            _noteControllers[i]?.dispose();
-                            _noteControllers.remove(i);
-                          });
+                        onEditingComplete: () async {
+                          final value = _noteControllers[noteId]?.text.trim() ?? '';
+                          if (value.isNotEmpty) {
+                            await DatabaseHelper.instance.updateNoteTitle(noteId, value);
+                            setState(() {
+                              notes[i]['title'] = value;
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          } else {
+                            setState(() {
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          }
                         },
                       ),
                       trailing: IconButton(
                         icon: const Icon(Icons.check),
-                        onPressed: () {
-                          setState(() {
-                            final value = _noteControllers[i]?.text.trim() ?? '';
-                            if (value.isNotEmpty) {
-                              notes[i] = value;
-                            }
-                            _editingIndex = null;
-                            _noteControllers[i]?.dispose();
-                            _noteControllers.remove(i);
-                          });
+                        onPressed: () async {
+                          final value = _noteControllers[noteId]?.text.trim() ?? '';
+                          if (value.isNotEmpty) {
+                            await DatabaseHelper.instance.updateNoteTitle(noteId, value);
+                            setState(() {
+                              notes[i]['title'] = value;
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          } else {
+                            setState(() {
+                              _editingIndex = null;
+                              _noteControllers[noteId]?.dispose();
+                              _noteControllers.remove(noteId);
+                            });
+                          }
                         },
                       ),
                     );
                   }
                   return ListTile(
-                    title: Text(notes[i]),
+                    title: Text(notes[i]['title'] as String),
                     selected: i == selectedIndex,
-                    onTap: () {
+                    onTap: () async {
                       setState(() {
                         selectedIndex = i;
                       });
-                      Navigator.pop(context);
+                      // Ensure we load the correct note data before switching
+                      await _loadNoteData(noteId);
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                      }
                     },
                     onLongPress: () {
                       setState(() {
                         _editingIndex = i;
                       });
                     },
-                    trailing: IconButton(
-                      icon: const Icon(Icons.edit, size: 20),
-                      onPressed: () {
-                        setState(() {
-                          _editingIndex = i;
-                        });
-                      },
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.edit, size: 20),
+                          onPressed: () {
+                            setState(() {
+                              _editingIndex = i;
+                            });
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete, size: 20),
+                          color: Colors.red,
+                          onPressed: () => _deleteNote(context, i, noteId),
+                        ),
+                      ],
                     ),
                   );
                 },
@@ -235,22 +486,37 @@ class _NotesHomePageState extends State<NotesHomePage> {
           ],
         ),
       ),
-      body: InfiniteCanvas(
-        noteIndex: selectedIndex,
-        initialData: _noteCanvasData[selectedIndex],
-        onDataChanged: (data) {
-          _noteCanvasData[selectedIndex] = data;
-        },
-      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : (notes.isEmpty
+              ? const Center(child: Text('No notes available'))
+              : (selectedIndex >= 0 && selectedIndex < notes.length
+                  ? InfiniteCanvas(
+                      key: ValueKey('canvas_${notes[selectedIndex]['id']}'),
+                      noteId: notes[selectedIndex]['id'] as int,
+                      initialData: _noteCanvasData[notes[selectedIndex]['id'] as int] ?? NoteCanvasData(),
+                      onDataChanged: (data) async {
+                        if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                          final noteId = notes[selectedIndex]['id'] as int;
+                          await _saveNoteData(noteId, data);
+                        }
+                      },
+                    )
+                  : const Center(child: Text('No note selected')))),
       floatingActionButton: FloatingActionButton(
         heroTag: "add_note_fab",
         child: const Icon(Icons.add),
-        onPressed: () {
+        onPressed: () async {
+          final noteId = await DatabaseHelper.instance.createNote('Note ${notes.length + 1}');
+          // Load the new note's data from database (even though it's empty, ensures consistency)
+          await _loadNoteData(noteId);
           setState(() {
-            notes.add('Note ${notes.length + 1}');
+            notes.add({'id': noteId, 'title': 'Note ${notes.length + 1}'});
             selectedIndex = notes.length - 1;
-            // Create a new empty canvas for the new note
-            _noteCanvasData[selectedIndex] = NoteCanvasData();
+            // Ensure canvas data is set (should already be loaded above)
+            if (!_noteCanvasData.containsKey(noteId)) {
+              _noteCanvasData[noteId] = NoteCanvasData();
+            }
           });
         },
       ),
@@ -268,13 +534,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
 }
 
 class InfiniteCanvas extends StatefulWidget {
-  final int noteIndex;
+  final int noteId;
   final NoteCanvasData? initialData;
   final Function(NoteCanvasData) onDataChanged;
   
   const InfiniteCanvas({
     super.key,
-    required this.noteIndex,
+    required this.noteId,
     this.initialData,
     required this.onDataChanged,
   });
@@ -293,6 +559,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   final List<CanvasState> _undoStack = [];
   final List<CanvasState> _redoStack = [];
   bool _eraserMode = false;
+  
+  // Drawing color
+  Color _selectedColor = Colors.black;
+  bool _showColorPicker = false;
   
   // Text mode
   bool _textMode = false;
@@ -315,22 +585,58 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   @override
   void didUpdateWidget(InfiniteCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // If note index changed, load the new note's canvas data
-    if (oldWidget.noteIndex != widget.noteIndex) {
+    // If note ID changed, save current data and load the new note's canvas data
+    if (oldWidget.noteId != widget.noteId) {
       _saveCurrentData();
       _loadCanvasData();
+    } else if (oldWidget.initialData != widget.initialData) {
+      // If same note but data changed (e.g., loaded from database), reload
+      // Use a deep comparison to detect actual changes
+      if (!_dataEquals(oldWidget.initialData, widget.initialData)) {
+        _loadCanvasData();
+      }
     }
   }
   
+  bool _dataEquals(NoteCanvasData? a, NoteCanvasData? b) {
+    if (a == null && b == null) return true;
+    if (a == null || b == null) return false;
+    if (a.strokes.length != b.strokes.length) return false;
+    if (a.textElements.length != b.textElements.length) return false;
+    // For performance, just check lengths - full comparison would be expensive
+    return true;
+  }
+  
   void _loadCanvasData() {
+    // Create a deep copy to ensure we're not sharing references
     final data = widget.initialData ?? NoteCanvasData();
-    _matrix = Matrix4.copy(data.matrix);
-    _scale = data.scale;
-    _strokes = List.from(data.strokes);
-    _textElements = List.from(data.textElements);
-    _currentStroke = null;
-    _undoStack.clear();
-    _redoStack.clear();
+    setState(() {
+      _matrix = Matrix4.copy(data.matrix);
+      _scale = data.scale;
+      // Create new lists to avoid reference sharing
+      _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList();
+      _textElements = data.textElements.map((te) => TextElement(te.position, te.text)).toList();
+      _currentStroke = null;
+      _undoStack.clear();
+      _redoStack.clear();
+    });
+  }
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Initialize color based on theme - this is called after initState and when dependencies change
+    final brightness = Theme.of(context).brightness;
+    final isDark = brightness == Brightness.dark;
+    if (_selectedColor == Colors.black && isDark) {
+      setState(() {
+        _selectedColor = Colors.white;
+      });
+    } else if (_selectedColor == Colors.white && !isDark) {
+      setState(() {
+        _selectedColor = Colors.black;
+      });
+    }
   }
   
   void _saveCurrentData() {
@@ -353,6 +659,25 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     // Get theme brightness directly from context and track changes
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
+    
+    // Initialize color based on theme if not set
+    if (_selectedColor == Colors.black && isDark) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedColor == Colors.black) {
+          setState(() {
+            _selectedColor = Colors.white;
+          });
+        }
+      });
+    } else if (_selectedColor == Colors.white && !isDark) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedColor == Colors.white) {
+          setState(() {
+            _selectedColor = Colors.black;
+          });
+        }
+      });
+    }
     
     // Force rebuild if brightness changed
     if (_lastBrightness != null && _lastBrightness != brightness) {
@@ -398,8 +723,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             child: Transform(
               transform: _matrix,
               child: CustomPaint(
-                // Key includes current stroke point count to force repaint during drawing
-                key: ValueKey('canvas_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}'),
+                // Key includes note ID and current stroke point count to force repaint during drawing
+                key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}'),
                 painter: _CanvasPainter(
                   _strokes, // Pass direct reference so changes are immediately visible
                   _textElements,
@@ -429,7 +754,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _saveCurrentData();
                   } else {
                     final pressure = isStylus ? event.pressure : 0.5;
-                    _currentStroke = Stroke([Point(local, pressure)]);
+                    _currentStroke = Stroke([Point(local, pressure)], color: _eraserMode ? (isDark ? const Color(0xFF121212) : Colors.white) : _selectedColor);
                     _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
                     _strokes.add(_currentStroke!);
                     _redoStack.clear();
@@ -550,9 +875,62 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                 }),
               ),
+              const SizedBox(height: 8),
+              FloatingActionButton(
+                heroTag: "color_picker_fab",
+                mini: true,
+                tooltip: 'Color Picker',
+                backgroundColor: _selectedColor,
+                child: Icon(
+                  Icons.palette,
+                  color: _selectedColor.computeLuminance() > 0.5 ? Colors.black : Colors.white,
+                ),
+                onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+              ),
             ],
           ),
         ),
+        // Color picker overlay
+        if (_showColorPicker)
+          Positioned(
+            top: 16,
+            right: 80,
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    BlockPicker(
+                      pickerColor: _selectedColor,
+                      onColorChanged: (color) {
+                        setState(() {
+                          _selectedColor = color;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        TextButton(
+                          onPressed: () => setState(() => _showColorPicker = false),
+                          child: const Text('Done'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         // Text input overlay - placed last so it's on top
         if (_activeTextElement != null)
           Positioned.fill(
@@ -723,6 +1101,18 @@ class NoteCanvasData {
       scale: scale,
     );
   }
+  
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is NoteCanvasData &&
+        other.strokes.length == strokes.length &&
+        other.textElements.length == textElements.length &&
+        other.scale == scale;
+  }
+  
+  @override
+  int get hashCode => Object.hash(strokes.length, textElements.length, scale);
 }
 
 class Point {
@@ -733,7 +1123,8 @@ class Point {
 
 class Stroke {
   final List<Point> points;
-  Stroke(this.points);
+  final Color color;
+  Stroke(this.points, {Color? color}) : color = color ?? Colors.black;
 
   bool hitTest(Offset pos) {
     for (final p in points) {
@@ -766,11 +1157,7 @@ class _CanvasPainter extends CustomPainter {
     // Light mode (isDark=false): white background, black strokes (should be visible)
     // Dark mode (isDark=true): dark background, white strokes (should be visible)
     final canvasColor = isDark ? const Color(0xFF121212) : Colors.white;
-    final strokeColor = isDark ? Colors.white : Colors.black;
     final textColor = isDark ? Colors.white : Colors.black;
-    
-    // Debug: Uncomment to see what values we're getting
-    // print('Painter: isDark=$isDark, canvasColor=$canvasColor, strokeColor=$strokeColor, strokes=${strokes.length}');
     
     // Always draw canvas background first to ensure it's visible
     // Use a large rect to ensure full coverage even if size is wrong
@@ -782,16 +1169,11 @@ class _CanvasPainter extends CustomPainter {
         ? Rect.fromLTWH(0, 0, size.width, size.height)
         : const Rect.fromLTWH(0, 0, 20000, 20000);
     canvas.drawRect(bgRect, backgroundPaint);
-    
-    final paint = Paint()
-      ..color = strokeColor
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
 
     // Draw strokes - optimized for real-time drawing
     for (final stroke in strokes) {
       final points = stroke.points;
+      final strokeColor = stroke.color;
       
       // Draw single point as a dot for immediate feedback
       if (points.length == 1) {
@@ -805,6 +1187,12 @@ class _CanvasPainter extends CustomPainter {
       }
       
       if (points.length < 2) continue;
+      
+      final paint = Paint()
+        ..color = strokeColor
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
       
       // Use quadratic curves for smoother lines with fewer points
       final path = Path()..moveTo(points.first.position.dx, points.first.position.dy);
@@ -959,6 +1347,19 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const Divider(),
+          ListTile(
+            leading: const Icon(Icons.upload_file),
+            title: const Text('Export Notes'),
+            subtitle: const Text('Export all notes to JSON file'),
+            onTap: () => _exportNotes(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.download),
+            title: const Text('Import Notes'),
+            subtitle: const Text('Import notes from JSON file'),
+            onTap: () => _importNotes(context),
+          ),
+          const Divider(),
           const ListTile(
             leading: Icon(Icons.cloud_sync),
             title: Text('Cloud Sync'),
@@ -987,6 +1388,73 @@ class _SettingsPageState extends State<SettingsPage> {
         return 'Always light';
       case ThemeMode.dark:
         return 'Always dark';
+    }
+  }
+
+  Future<void> _exportNotes(BuildContext context) async {
+    try {
+      final exportData = await DatabaseHelper.instance.exportAllNotes();
+      final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
+      
+      // Get downloads directory or documents directory
+      final directory = await getApplicationDocumentsDirectory();
+      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+      final file = File('${directory.path}/feather_notes_export_$timestamp.json');
+      
+      await file.writeAsString(jsonString);
+      
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Notes exported to: ${file.path}'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Export failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _importNotes(BuildContext context) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null && result.files.single.path != null) {
+        final file = File(result.files.single.path!);
+        final jsonString = await file.readAsString();
+        final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+
+        await DatabaseHelper.instance.importAllNotes(importData);
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Notes imported successfully! Please restart the app.'),
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Import failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 }

@@ -99,6 +99,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
   int selectedIndex = 0;
   int? _editingIndex;
   final Map<int, TextEditingController> _noteControllers = {};
+  final Map<int, NoteCanvasData> _noteCanvasData = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize the first note with empty canvas data
+    if (_noteCanvasData[0] == null) {
+      _noteCanvasData[0] = NoteCanvasData();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +235,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
           ],
         ),
       ),
-      body: InfiniteCanvas(),
+      body: InfiniteCanvas(
+        noteIndex: selectedIndex,
+        initialData: _noteCanvasData[selectedIndex],
+        onDataChanged: (data) {
+          _noteCanvasData[selectedIndex] = data;
+        },
+      ),
       floatingActionButton: FloatingActionButton(
         heroTag: "add_note_fab",
         child: const Icon(Icons.add),
@@ -233,6 +249,8 @@ class _NotesHomePageState extends State<NotesHomePage> {
           setState(() {
             notes.add('Note ${notes.length + 1}');
             selectedIndex = notes.length - 1;
+            // Create a new empty canvas for the new note
+            _noteCanvasData[selectedIndex] = NoteCanvasData();
           });
         },
       ),
@@ -250,15 +268,27 @@ class _NotesHomePageState extends State<NotesHomePage> {
 }
 
 class InfiniteCanvas extends StatefulWidget {
+  final int noteIndex;
+  final NoteCanvasData? initialData;
+  final Function(NoteCanvasData) onDataChanged;
+  
+  const InfiniteCanvas({
+    super.key,
+    required this.noteIndex,
+    this.initialData,
+    required this.onDataChanged,
+  });
+
   @override
   State<InfiniteCanvas> createState() => _InfiniteCanvasState();
 }
 
 class _InfiniteCanvasState extends State<InfiniteCanvas> {
-  Matrix4 _matrix = Matrix4.identity();
-  double _scale = 1.0;
-
-  final List<Stroke> _strokes = [];
+  late Matrix4 _matrix;
+  late double _scale;
+  late List<Stroke> _strokes;
+  late List<TextElement> _textElements;
+  
   Stroke? _currentStroke;
   final List<CanvasState> _undoStack = [];
   final List<CanvasState> _redoStack = [];
@@ -266,7 +296,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   
   // Text mode
   bool _textMode = false;
-  final List<TextElement> _textElements = [];
   TextElement? _activeTextElement;
   final FocusNode _textFocusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
@@ -276,6 +305,42 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   
   // Store theme brightness to ensure it's always current
   Brightness? _lastBrightness;
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadCanvasData();
+  }
+  
+  @override
+  void didUpdateWidget(InfiniteCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If note index changed, load the new note's canvas data
+    if (oldWidget.noteIndex != widget.noteIndex) {
+      _saveCurrentData();
+      _loadCanvasData();
+    }
+  }
+  
+  void _loadCanvasData() {
+    final data = widget.initialData ?? NoteCanvasData();
+    _matrix = Matrix4.copy(data.matrix);
+    _scale = data.scale;
+    _strokes = List.from(data.strokes);
+    _textElements = List.from(data.textElements);
+    _currentStroke = null;
+    _undoStack.clear();
+    _redoStack.clear();
+  }
+  
+  void _saveCurrentData() {
+    widget.onDataChanged(NoteCanvasData(
+      strokes: _strokes,
+      textElements: _textElements,
+      matrix: _matrix,
+      scale: _scale,
+    ));
+  }
   
   Offset _transformToScreen(Offset localPoint) {
     final v = vm.Vector4(localPoint.dx, localPoint.dy, 0, 1);
@@ -310,7 +375,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onScaleStart: (details) => _lastFocalPoint = details.focalPoint,
-            onScaleUpdate: (details) {
+                  onScaleUpdate: (details) {
               if (details.pointerCount >= 2) {
                 setState(() {
                   final dx = details.focalPoint.dx - _lastFocalPoint.dx;
@@ -325,6 +390,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   _matrix = _matrix..translateByDouble(focal.dx, focal.dy, 0, 0)..scaleByDouble(scaleFactor, scaleFactor, scaleFactor, 1)..translateByDouble(-focal.dx, -focal.dy, 0, 0);
 
                   _lastFocalPoint = details.focalPoint;
+                  _saveCurrentData();
                 });
               }
             },
@@ -360,12 +426,14 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
                     _strokes.removeWhere((s) => s.hitTest(local));
                     _redoStack.clear();
+                    _saveCurrentData();
                   } else {
                     final pressure = isStylus ? event.pressure : 0.5;
                     _currentStroke = Stroke([Point(local, pressure)]);
                     _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
                     _strokes.add(_currentStroke!);
                     _redoStack.clear();
+                    _saveCurrentData();
                   }
                 });
               } else if (isMouse && _textMode) {
@@ -401,6 +469,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 if (mounted) {
                   setState(() {
                     // Trigger repaint - the point is already added above
+                    // Save data periodically during drawing (but not every frame for performance)
+                    if (_currentStroke!.points.length % 10 == 0) {
+                      _saveCurrentData();
+                    }
                   });
                 }
               }
@@ -408,7 +480,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             onPointerUp: (event) {
               if (_activeTextElement == null) {
                 // Always update on pointer up to ensure final point is drawn
-                setState(() => _currentStroke = null);
+                setState(() {
+                  _currentStroke = null;
+                  _saveCurrentData();
+                });
               }
             },
             behavior: HitTestBehavior.opaque,
@@ -489,6 +564,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
                     _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
                     _redoStack.clear();
+                    _saveCurrentData();
                   }
                   _activeTextElement = null;
                   _textController.clear();
@@ -555,6 +631,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                               _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
                               _textElements.add(TextElement(_activeTextElement!.position, value));
                               _redoStack.clear();
+                              _saveCurrentData();
                             }
                             _activeTextElement = null;
                             _textController.clear();
@@ -597,6 +674,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         final state = _undoStack.removeLast();
         _strokes..clear()..addAll(state.strokes);
         _textElements..clear()..addAll(state.textElements);
+        _saveCurrentData();
       });
     }
   }
@@ -608,6 +686,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         final state = _redoStack.removeLast();
         _strokes..clear()..addAll(state.strokes);
         _textElements..clear()..addAll(state.textElements);
+        _saveCurrentData();
       });
     }
   }
@@ -617,6 +696,33 @@ class CanvasState {
   final List<Stroke> strokes;
   final List<TextElement> textElements;
   CanvasState(this.strokes, this.textElements);
+}
+
+// Complete canvas state for a note (strokes, text, transform matrix, etc.)
+class NoteCanvasData {
+  final List<Stroke> strokes;
+  final List<TextElement> textElements;
+  final Matrix4 matrix;
+  final double scale;
+  
+  NoteCanvasData({
+    List<Stroke>? strokes,
+    List<TextElement>? textElements,
+    Matrix4? matrix,
+    double? scale,
+  })  : strokes = strokes ?? [],
+        textElements = textElements ?? [],
+        matrix = matrix ?? Matrix4.identity(),
+        scale = scale ?? 1.0;
+  
+  NoteCanvasData copy() {
+    return NoteCanvasData(
+      strokes: List.from(strokes),
+      textElements: List.from(textElements),
+      matrix: Matrix4.copy(matrix),
+      scale: scale,
+    );
+  }
 }
 
 class Point {

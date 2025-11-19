@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:convert';
 import 'dart:io';
@@ -9,6 +10,12 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database_helper.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
+import 'cloud_sync/sync_manager.dart';
+import 'cloud_sync/sync_provider.dart';
+import 'cloud_sync/nextcloud_provider.dart';
+import 'cloud_sync/conflict_resolution_dialog.dart';
+import 'cloud_sync/cloud_sync_dialog.dart';
+import 'cloud_sync/sync_settings_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1373,12 +1380,49 @@ class Stroke {
     }
     return false;
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'points': points.map((p) => {
+        'x': p.position.dx,
+        'y': p.position.dy,
+        'pressure': p.pressure,
+      }).toList(),
+      'color': color.value,
+    };
+  }
+
+  factory Stroke.fromJson(Map<String, dynamic> json) {
+    final pointsData = json['points'] as List<dynamic>? ?? [];
+    final points = pointsData.map((p) => Point(
+      Offset((p['x'] as num).toDouble(), (p['y'] as num).toDouble()),
+      (p['pressure'] as num?)?.toDouble() ?? 0.5,
+    )).toList();
+    final colorValue = json['color'] as int?;
+    final color = colorValue != null ? Color(colorValue) : Colors.black;
+    return Stroke(points, color: color);
+  }
 }
 
 class TextElement {
   final Offset position;
   final String text;
   TextElement(this.position, this.text);
+
+  Map<String, dynamic> toJson() {
+    return {
+      'position': {'x': position.dx, 'y': position.dy},
+      'text': text,
+    };
+  }
+
+  factory TextElement.fromJson(Map<String, dynamic> json) {
+    final pos = json['position'] as Map<String, dynamic>;
+    return TextElement(
+      Offset((pos['x'] as num).toDouble(), (pos['y'] as num).toDouble()),
+      json['text'] as String,
+    );
+  }
 }
 
 class _CanvasPainter extends CustomPainter {
@@ -1531,11 +1575,206 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   ThemeMode _currentThemeMode = ThemeMode.system;
+  final SyncManager _syncManager = SyncManager();
 
   @override
   void initState() {
     super.initState();
     _loadThemeMode();
+    _syncManager.initialize();
+  }
+  
+  Future<void> _showCloudSyncDialog(BuildContext context) async {
+    await showDialog(
+      context: context,
+      builder: (context) => CloudSyncDialog(
+        syncManager: _syncManager,
+        onSyncRequested: () => _performSync(context),
+      ),
+    );
+    setState(() {}); // Refresh UI after dialog closes
+  }
+  
+  Future<void> _performSync(BuildContext context) async {
+    if (_syncManager.currentProvider == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please configure a sync provider first'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!await _syncManager.currentProvider!.isConfigured()) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sync provider not configured'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Show loading indicator
+    if (context.mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const Center(
+          child: Card(
+            child: Padding(
+              padding: EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text('Syncing...'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    try {
+      // Prepare local notes for sync (in export format)
+      final allNotes = await DatabaseHelper.instance.getAllNotes(
+        searchQuery: null,
+        sortBy: 'id',
+        filterTags: null,
+      );
+      
+      final localNotesForSync = <Map<String, dynamic>>[];
+      for (final note in allNotes) {
+        final noteId = note['id'] as int;
+        final exportedNote = await DatabaseHelper.instance.exportNote(noteId);
+        final tags = await DatabaseHelper.instance.getNoteTags(noteId);
+        exportedNote['note'] = {
+          ...exportedNote['note'] as Map<String, dynamic>,
+          'tags': tags,
+        };
+        localNotesForSync.add(exportedNote);
+      }
+
+      // Perform sync
+      final result = await _syncManager.sync(
+        localNotes: localNotesForSync,
+        onNoteUpdated: (noteId, noteData) async {
+          // Update existing note
+          final note = noteData['note'] as Map<String, dynamic>?;
+          final canvas = noteData['canvas'] as Map<String, dynamic>?;
+          
+          if (note == null || canvas == null) {
+            print('Sync: Error: Note data missing note or canvas: $noteData');
+            return;
+          }
+          
+          // Update note title if changed
+          final titleValue = note['title'];
+          if (titleValue != null) {
+            await DatabaseHelper.instance.updateNoteTitle(noteId, titleValue.toString());
+          }
+          
+          // Update tags
+          final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+          await DatabaseHelper.instance.setNoteTags(noteId, tags);
+          
+          // Update canvas data
+          final strokesData = canvas['strokes'] as List<dynamic>?;
+          final strokes = strokesData != null
+              ? strokesData.map<Stroke>((s) {
+                  if (s is Map<String, dynamic>) {
+                    return Stroke.fromJson(s);
+                  } else if (s is String) {
+                    return Stroke.fromJson(jsonDecode(s) as Map<String, dynamic>);
+                  }
+                  return Stroke.fromJson(s as Map<String, dynamic>);
+                }).toList()
+              : <Stroke>[];
+          final textElementsData = canvas['text_elements'] as List<dynamic>?;
+          final textElements = textElementsData != null
+              ? textElementsData.map<TextElement>((te) {
+                  if (te is Map<String, dynamic>) {
+                    return TextElement.fromJson(te);
+                  }
+                  return TextElement.fromJson(te as Map<String, dynamic>);
+                }).toList()
+              : <TextElement>[];
+          final matrixData = canvas['matrix'];
+          Matrix4 matrix = Matrix4.identity();
+          if (matrixData != null) {
+            if (matrixData is List) {
+              matrix = _parseMatrix(matrixData);
+            } else if (matrixData is String) {
+              final values = jsonDecode(matrixData) as List<dynamic>;
+              matrix = _parseMatrix(values);
+            }
+          }
+          final scale = (canvas['scale'] as num?)?.toDouble() ?? 1.0;
+          
+          final canvasData = NoteCanvasData(
+            strokes: strokes,
+            textElements: textElements,
+            matrix: matrix,
+            scale: scale,
+          );
+          
+          await DatabaseHelper.instance.saveCanvasData(noteId, canvasData);
+        },
+        onNoteCreated: (noteData) async {
+          // Create new note from remote using importNote
+          await DatabaseHelper.instance.importNote(noteData);
+        },
+      );
+
+      // Close loading dialog
+      if (context.mounted) {
+        Navigator.pop(context);
+      }
+
+      // Show results
+      if (context.mounted) {
+        String message = 'Sync completed: ';
+        if (result.uploaded > 0) message += '${result.uploaded} uploaded, ';
+        if (result.downloaded > 0) message += '${result.downloaded} downloaded';
+        if (result.uploaded == 0 && result.downloaded == 0) {
+          message = 'Sync completed: No changes';
+        }
+        if (result.hasConflicts) {
+          message += '\n${result.conflicts} conflict(s) detected';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: result.hasError ? Colors.red : (result.hasConflicts ? Colors.orange : Colors.green),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sync failed: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+  
+  Matrix4 _parseMatrix(List<dynamic> data) {
+    if (data.length != 16) return Matrix4.identity();
+    return Matrix4.fromList(data.map((e) => e as double).toList());
   }
 
   Future<void> _loadThemeMode() async {
@@ -1613,10 +1852,11 @@ class _SettingsPageState extends State<SettingsPage> {
             onTap: () => _importNotes(context),
           ),
           const Divider(),
-          const ListTile(
-            leading: Icon(Icons.cloud_sync),
-            title: Text('Cloud Sync'),
-            subtitle: Text('Configure sync provider and frequency'),
+          ListTile(
+            leading: const Icon(Icons.cloud_sync),
+            title: const Text('Cloud Sync'),
+            subtitle: const Text('Configure sync provider and frequency'),
+            onTap: () => _showCloudSyncDialog(context),
           ),
           const ListTile(
             leading: Icon(Icons.brush),

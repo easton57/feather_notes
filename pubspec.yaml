@@ -42,6 +42,11 @@ dependencies:
   path_provider: ^2.1.1
   file_picker: ^6.1.1
   flutter_colorpicker: ^1.0.3
+  http: ^1.2.0
+  xml: ^6.4.2
+  crypto: ^3.0.3
+  google_sign_in: ^6.2.1
+  googleapis: ^13.1.0
 
 dev_dependencies:
   flutter_test:

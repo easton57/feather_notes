@@ -481,29 +481,62 @@ class DatabaseHelper {
   }
 
   Future<int> importNote(Map<String, dynamic> noteData) async {
-    final note = noteData['note'] as Map<String, dynamic>;
-    final canvas = noteData['canvas'] as Map<String, dynamic>;
+    final note = noteData['note'] as Map<String, dynamic>?;
+    final canvas = noteData['canvas'] as Map<String, dynamic>?;
+    
+    if (note == null || canvas == null) {
+      throw Exception('Note data missing note or canvas: $noteData');
+    }
 
     // Create note
-    final noteId = await createNote(note['title'] as String);
+    final titleValue = note['title'];
+    if (titleValue == null) {
+      throw Exception('Note missing title field');
+    }
+    final noteId = await createNote(titleValue.toString());
 
     // Reconstruct canvas data
-    final strokes = (canvas['strokes'] as List<dynamic>)
-        .map((s) => _strokeFromJson(s as String))
+    final strokesData = canvas['strokes'];
+    final strokes = (strokesData is List<dynamic> ? strokesData : <dynamic>[])
+        .map((s) {
+          if (s is String) {
+            return _strokeFromJson(s);
+          } else {
+            throw Exception('Invalid stroke data type: ${s.runtimeType}');
+          }
+        })
         .toList();
 
-    final textElements = (canvas['text_elements'] as List<dynamic>)
+    final textElementsData = canvas['text_elements'];
+    final textElements = (textElementsData is List<dynamic> ? textElementsData : <dynamic>[])
         .map((te) {
-          final pos = te['position'] as Map<String, dynamic>;
+          if (te is! Map<String, dynamic>) {
+            throw Exception('Invalid text element data type: ${te.runtimeType}');
+          }
+          final pos = te['position'] as Map<String, dynamic>?;
+          if (pos == null) {
+            throw Exception('Text element missing position');
+          }
+          final x = pos['x'];
+          final y = pos['y'];
+          final text = te['text'];
+          if (x == null || y == null || text == null) {
+            throw Exception('Text element missing required fields');
+          }
           return TextElement(
-            Offset(pos['x'] as double, pos['y'] as double),
-            te['text'] as String,
+            Offset((x as num).toDouble(), (y as num).toDouble()),
+            text.toString(),
           );
         })
         .toList();
 
-    final matrix = _matrixFromJson(canvas['matrix'] as String);
-    final scale = canvas['scale'] as double? ?? 1.0;
+    final matrixData = canvas['matrix'];
+    if (matrixData == null || matrixData is! String) {
+      throw Exception('Canvas missing matrix data');
+    }
+    final matrix = _matrixFromJson(matrixData);
+    final scaleValue = canvas['scale'];
+    final scale = scaleValue != null ? (scaleValue as num).toDouble() : 1.0;
 
     final canvasData = NoteCanvasData(
       strokes: strokes,

@@ -163,12 +163,27 @@ class _NotesHomePageState extends State<NotesHomePage> {
         // Load canvas data for each note to ensure correct alignment
         try {
           final data = await DatabaseHelper.instance.loadCanvasData(noteId);
+          
+          // Validate and fix matrix if corrupted
+          Matrix4 matrix = Matrix4.copy(data.matrix);
+          final determinant = matrix.determinant();
+          if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
+            // Matrix is corrupted, reset to identity
+            matrix = Matrix4.identity();
+          }
+          
+          // Validate scale
+          double scale = data.scale;
+          if (!scale.isFinite || scale <= 0 || scale.isNaN) {
+            scale = 1.0;
+          }
+          
           // Create a deep copy to avoid reference sharing
           loadedCanvasData[noteId] = NoteCanvasData(
             strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
             textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
-            matrix: Matrix4.copy(data.matrix),
-            scale: data.scale,
+            matrix: matrix,
+            scale: scale,
           );
         } catch (e) {
           // If loading fails, use empty canvas data
@@ -279,13 +294,28 @@ class _NotesHomePageState extends State<NotesHomePage> {
     // Always reload from database to ensure we have the latest data and correct alignment
     try {
       final data = await DatabaseHelper.instance.loadCanvasData(noteId);
+      
+      // Validate and fix matrix if corrupted
+      Matrix4 matrix = Matrix4.copy(data.matrix);
+      final determinant = matrix.determinant();
+      if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
+        // Matrix is corrupted, reset to identity
+        matrix = Matrix4.identity();
+      }
+      
+      // Validate scale
+      double scale = data.scale;
+      if (!scale.isFinite || scale <= 0 || scale.isNaN) {
+        scale = 1.0;
+      }
+      
       // Create a deep copy to avoid reference sharing between notes
       setState(() {
         _noteCanvasData[noteId] = NoteCanvasData(
           strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
           textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
-          matrix: Matrix4.copy(data.matrix),
-          scale: data.scale,
+          matrix: matrix,
+          scale: scale,
         );
       });
     } catch (e) {
@@ -831,6 +861,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   // Store theme brightness to ensure it's always current
   Brightness? _lastBrightness;
   
+  // Panning state
+  bool _isPanning = false;
+  Offset? _panStartPosition; // Initial position when panning started
+  Offset? _lastPanPosition; // Previous position for incremental delta calculation
+  
   @override
   void initState() {
     super.initState();
@@ -865,9 +900,29 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   void _loadCanvasData() {
     // Create a deep copy to ensure we're not sharing references
     final data = widget.initialData ?? NoteCanvasData();
+    print('[_loadCanvasData] Loading canvas data, initial matrix: ${data.matrix.getTranslation()}, scale: ${data.scale}');
     setState(() {
-      _matrix = Matrix4.copy(data.matrix);
-      _scale = data.scale;
+      // Validate and fix matrix if corrupted
+      Matrix4 matrix = Matrix4.copy(data.matrix);
+      final determinant = matrix.determinant();
+      print('[_loadCanvasData] Matrix determinant: $determinant');
+      if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
+        // Matrix is corrupted, reset to identity
+        print('[_loadCanvasData] Matrix corrupted, resetting to identity');
+        matrix = Matrix4.identity();
+      }
+      _matrix = matrix;
+      
+      // Validate scale
+      double scale = data.scale;
+      if (!scale.isFinite || scale <= 0 || scale.isNaN) {
+        print('[_loadCanvasData] Scale invalid, resetting to 1.0');
+        scale = 1.0;
+      }
+      _scale = scale;
+      
+      print('[_loadCanvasData] Final matrix: ${_matrix.getTranslation()}, scale: $_scale');
+      
       // Create new lists to avoid reference sharing
       _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList();
       _textElements = data.textElements.map((te) => TextElement(te.position, te.text)).toList();
@@ -895,6 +950,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   }
   
   void _saveCurrentData() {
+    print('[_saveCurrentData] Saving canvas data, matrix: ${_matrix.getTranslation()}, scale: $_scale');
     widget.onDataChanged(NoteCanvasData(
       strokes: _strokes,
       textElements: _textElements,
@@ -952,6 +1008,29 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         Listener(
           onPointerDown: (e) => setState(() => _pointerCount++),
           onPointerUp: (e) => setState(() => _pointerCount = (_pointerCount - 1).clamp(0, 10)),
+          onPointerSignal: (event) {
+            // Handle mouse wheel scrolling
+            print('[onPointerSignal] kind: ${event.kind}');
+            // Check if it's a scroll event by checking the kind
+            if (event.kind == ui.PointerDeviceKind.mouse) {
+              // Try to access scrollDelta if available
+              try {
+                final scrollDelta = (event as dynamic).scrollDelta as Offset?;
+                print('[onPointerSignal] scrollDelta: $scrollDelta');
+                if (scrollDelta != null) {
+                  print('[onPointerSignal] Scrolling: matrix before: ${_matrix.getTranslation()}');
+                  setState(() {
+                    _matrix = _matrix..translateByDouble(-scrollDelta.dx, -scrollDelta.dy, 0, 0);
+                    print('[onPointerSignal] Scrolling: matrix after: ${_matrix.getTranslation()}');
+                    _saveCurrentData();
+                  });
+                }
+              } catch (e) {
+                print('[onPointerSignal] Error accessing scrollDelta: $e');
+                // If scrollDelta is not available, ignore
+              }
+            }
+          },
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
             onScaleStart: (details) => _lastFocalPoint = details.focalPoint,
@@ -976,6 +1055,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             },
             onScaleEnd: (_) => _scale = 1.0,
             child: Transform(
+              key: ValueKey('transform_${_matrix.getTranslation()}'),
               transform: _matrix,
               child: CustomPaint(
                 // Key includes note ID and current stroke point count to force repaint during drawing
@@ -998,8 +1078,65 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               
               final isStylus = event.kind == ui.PointerDeviceKind.stylus || event.kind == ui.PointerDeviceKind.invertedStylus;
               final isMouse = event.kind == ui.PointerDeviceKind.mouse;
+              final isTouch = event.kind == ui.PointerDeviceKind.touch;
+              
+              print('[onPointerDown] kind: ${event.kind}, buttons: ${event.buttons}, position: ${event.localPosition}');
+              print('[onPointerDown] isMouse: $isMouse, isTouch: $isTouch, _pointerCount: $_pointerCount, _textMode: $_textMode, _currentStroke: ${_currentStroke != null}');
+              
+              // Check for right-click panning FIRST (before drawing)
+              // Note: buttons might not be set on onPointerDown, so we'll also check in onPointerMove
+              // But we can prevent stroke creation here if buttons is available
+              if (isMouse && event.buttons == 2) {
+                // Right-click panning - prevent drawing
+                print('[onPointerDown] Right-click detected (buttons=2), starting panning');
+                setState(() {
+                  _isPanning = true;
+                  _panStartPosition = event.localPosition;
+                  _lastPanPosition = event.localPosition; // Initialize last position
+                  // Cancel any active stroke
+                  if (_currentStroke != null) {
+                    print('[onPointerDown] Cancelling active stroke for panning');
+                    // Remove the stroke from strokes list if it was just added
+                    if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+                      _strokes.removeLast();
+                    }
+                    _currentStroke = null;
+                  }
+                });
+                return;
+              }
+              
+              // For touch, check for single-finger panning (only if not in text mode and no stroke active)
+              if (isTouch && _pointerCount == 1 && !_textMode && _currentStroke == null) {
+                // Single-finger touch panning
+                print('[onPointerDown] Starting touch panning');
+                setState(() {
+                  _isPanning = true;
+                  _panStartPosition = event.localPosition;
+                  _lastPanPosition = event.localPosition; // Initialize last position
+                });
+                return;
+              }
+              
+              // Don't start drawing if we're panning
+              if (_isPanning) {
+                print('[onPointerDown] Skipping drawing because panning is active');
+                return;
+              }
               
               if (isStylus || (isMouse && !_textMode)) {
+                // Double-check we're not panning (buttons might not have been set on down)
+                if (isMouse && event.buttons == 2) {
+                  print('[onPointerDown] Right-click detected during drawing check, starting panning instead');
+                  setState(() {
+                    _isPanning = true;
+                    _panStartPosition = event.localPosition;
+                    _lastPanPosition = event.localPosition; // Initialize last position
+                    _currentStroke = null;
+                  });
+                  return;
+                }
+                
                 final local = _transformToLocal(event.localPosition);
                 setState(() {
                   if (_eraserMode) {
@@ -1069,6 +1206,88 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               
               final isStylus = event.kind == ui.PointerDeviceKind.stylus || event.kind == ui.PointerDeviceKind.invertedStylus;
               final isMouse = event.kind == ui.PointerDeviceKind.mouse;
+              final isTouch = event.kind == ui.PointerDeviceKind.touch;
+              
+              print('[onPointerMove] kind: ${event.kind}, buttons: ${event.buttons}, position: ${event.localPosition}');
+              print('[onPointerMove] isMouse: $isMouse, _isPanning: $_isPanning, _currentStroke: ${_currentStroke != null}');
+              
+              // Check for right-click panning (buttons == 2 means right mouse button)
+              if (isMouse && event.buttons == 2 && !_isPanning) {
+                // Start right-click panning
+                print('[onPointerMove] Starting right-click panning');
+                setState(() {
+                  _isPanning = true;
+                  _panStartPosition = event.localPosition;
+                  _lastPanPosition = event.localPosition; // Initialize last position
+                  // Cancel any active stroke that might have been created
+                  if (_currentStroke != null) {
+                    print('[onPointerMove] Cancelling active stroke for panning');
+                    // Remove the stroke from strokes list if it was just added
+                    if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+                      _strokes.removeLast();
+                    }
+                    _currentStroke = null;
+                  }
+                });
+                // Don't return - continue to panning handling below so first move is processed
+              }
+              
+              // Handle panning (single finger touch or right-click mouse)
+              // Use the same approach as two-finger panning: calculate delta from previous position
+              if (_isPanning && _lastPanPosition != null) {
+                // Calculate delta from the previous position (like two-finger panning does)
+                final dx = event.localPosition.dx - _lastPanPosition!.dx;
+                final dy = event.localPosition.dy - _lastPanPosition!.dy;
+                final translationBefore = _matrix.getTranslation();
+                print('[onPointerMove] Panning: delta=($dx, $dy), matrix translation before: $translationBefore');
+                
+                // Validate delta before applying (prevent NaN or infinite values)
+                if (dx.isFinite && dy.isFinite && !dx.isNaN && !dy.isNaN) {
+                  setState(() {
+                    // Manually update translation by extracting current translation, adding delta, and setting it back
+                    // This ensures proper accumulation regardless of other transformations in the matrix
+                    final currentTranslation = _matrix.getTranslation();
+                    final newX = currentTranslation.x + dx;
+                    final newY = currentTranslation.y + dy;
+                    final newZ = currentTranslation.z;
+                    
+                    // Create a new matrix with the updated translation
+                    // Preserve scale and rotation by copying the matrix and then setting translation entries
+                    // Translation is stored in matrix storage[12] (x), storage[13] (y), storage[14] (z)
+                    final newMatrix = Matrix4.copy(_matrix);
+                    newMatrix.storage[12] = newX;  // x translation
+                    newMatrix.storage[13] = newY;  // y translation
+                    newMatrix.storage[14] = newZ;  // z translation
+                    _matrix = newMatrix;
+                    
+                    _lastPanPosition = event.localPosition; // Update last position for next frame
+                    final translationAfter = _matrix.getTranslation();
+                    print('[onPointerMove] Panning: matrix translation after: $translationAfter');
+                    // Don't save on every move to avoid performance issues
+                    // Save will happen on pointer up
+                  });
+                } else {
+                  print('[onPointerMove] Invalid delta detected: ($dx, $dy), skipping panning');
+                }
+                return;
+              }
+              
+              // If we were panning but buttons changed, stop panning
+              if (_isPanning && isMouse && event.buttons != 2) {
+                print('[onPointerMove] Stopping panning (buttons changed to ${event.buttons})');
+                setState(() {
+                  _isPanning = false;
+                  _panStartPosition = null;
+                  _lastPanPosition = null;
+                  _saveCurrentData();
+                });
+                return;
+              }
+              
+              // Don't draw if we're panning
+              if (_isPanning) {
+                return;
+              }
               
               if (_currentStroke != null && (isStylus || (isMouse && !_textMode))) {
                 final local = _transformToLocal(event.localPosition);
@@ -1090,6 +1309,21 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               }
             },
             onPointerUp: (event) {
+              print('[onPointerUp] kind: ${event.kind}, buttons: ${event.buttons}, _isPanning: $_isPanning');
+              
+              // End panning if active
+              if (_isPanning) {
+                print('[onPointerUp] Ending panning');
+                setState(() {
+                  _isPanning = false;
+                  _panStartPosition = null;
+                  _lastPanPosition = null;
+                  _saveCurrentData();
+                });
+                // Don't process drawing if we were panning
+                return;
+              }
+              
               if (_activeTextElement == null) {
                 // Always update on pointer up to ensure final point is drawn
                 setState(() {

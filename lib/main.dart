@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
 import 'package:file_picker/file_picker.dart';
@@ -797,6 +798,11 @@ class InfiniteCanvas extends StatefulWidget {
   State<InfiniteCanvas> createState() => _InfiniteCanvasState();
 }
 
+// Intent for submitting text (Enter key)
+class _SubmitTextIntent extends Intent {
+  const _SubmitTextIntent();
+}
+
 class _InfiniteCanvasState extends State<InfiniteCanvas> {
   late Matrix4 _matrix;
   late double _scale;
@@ -815,6 +821,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   // Text mode
   bool _textMode = false;
   TextElement? _activeTextElement;
+  int? _editingTextElementIndex; // Index of text element being edited, null if creating new
   final FocusNode _textFocusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
 
@@ -1010,15 +1017,47 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                 });
               } else if (isMouse && _textMode) {
-                // Click to place text cursor
+                // Click to place text cursor or edit existing text
                 final local = _transformToLocal(event.localPosition);
+                
+                // Check if clicking on an existing text element
+                int? clickedTextIndex;
+                // Get text color from theme
+                final brightness = Theme.of(context).brightness;
+                final isDark = brightness == Brightness.dark;
+                final textColor = isDark ? Colors.white : Colors.black;
+                for (int i = _textElements.length - 1; i >= 0; i--) {
+                  if (_textElements[i].hitTest(local, textColor: textColor)) {
+                    clickedTextIndex = i;
+                    break;
+                  }
+                }
+                
                 setState(() {
-                  _activeTextElement = TextElement(local, '');
-                  _textController.clear();
+                  if (clickedTextIndex != null) {
+                    // Edit existing text element
+                    _editingTextElementIndex = clickedTextIndex;
+                    _activeTextElement = TextElement(
+                      _textElements[clickedTextIndex].position,
+                      _textElements[clickedTextIndex].text,
+                    );
+                    _textController.text = _textElements[clickedTextIndex].text;
+                  } else {
+                    // Create new text element
+                    _editingTextElementIndex = null;
+                    _activeTextElement = TextElement(local, '');
+                    _textController.clear();
+                  }
                   // Request focus after a small delay to ensure the widget is built
                   Future.delayed(const Duration(milliseconds: 50), () {
                     if (mounted) {
                       _textFocusNode.requestFocus();
+                      // Move cursor to end of text when editing
+                      if (_editingTextElementIndex != null) {
+                        _textController.selection = TextSelection.fromPosition(
+                          TextPosition(offset: _textController.text.length),
+                        );
+                      }
                     }
                   });
                 });
@@ -1063,25 +1102,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           ),
         ),
         Positioned(
-          right: 12,
-          bottom: 12,
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Text('Infinite Canvas', style: TextStyle(fontSize: 12)),
-                  SizedBox(height: 4),
-                  Text('Mouse/stylus to draw, two-finger to pan/zoom', style: TextStyle(fontSize: 10)),
-                  SizedBox(height: 2),
-                  Text('Click in text mode to add text', style: TextStyle(fontSize: 10)),
-                ],
-              ),
-            ),
-          ),
-        ),
-        Positioned(
           top: 16,
           right: 16,
           child: Column(
@@ -1120,6 +1140,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   if (!_textMode) {
                     _textFocusNode.unfocus();
                     _activeTextElement = null;
+                    _editingTextElementIndex = null;
+                    _textController.clear();
                   }
                 }),
               ),
@@ -1183,20 +1205,30 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         if (_activeTextElement != null)
           Positioned.fill(
             child: GestureDetector(
-              onTap: () {
-                // Click outside to dismiss
-                setState(() {
-                  if (_textController.text.isNotEmpty && _activeTextElement != null) {
-                    _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                    _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
-                    _redoStack.clear();
-                    _saveCurrentData();
-                  }
-                  _activeTextElement = null;
-                  _textController.clear();
-                  _textFocusNode.unfocus();
-                });
-              },
+                onTap: () {
+                  // Click outside to dismiss
+                  setState(() {
+                    if (_textController.text.isNotEmpty && _activeTextElement != null) {
+                      _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+                      if (_editingTextElementIndex != null) {
+                        // Update existing text element
+                        _textElements[_editingTextElementIndex!] = TextElement(
+                          _activeTextElement!.position,
+                          _textController.text,
+                        );
+                      } else {
+                        // Add new text element
+                        _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
+                      }
+                      _redoStack.clear();
+                      _saveCurrentData();
+                    }
+                    _activeTextElement = null;
+                    _editingTextElementIndex = null;
+                    _textController.clear();
+                    _textFocusNode.unfocus();
+                  });
+                },
               child: Container(color: Colors.transparent),
             ),
           ),
@@ -1225,45 +1257,71 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         borderRadius: BorderRadius.circular(4),
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: TextField(
-                        controller: _textController,
-                        focusNode: _textFocusNode,
-                        autofocus: true,
-                        keyboardType: TextInputType.text,
-                        textInputAction: TextInputAction.done,
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: isDark ? Colors.white : Colors.black,
-                        ),
-                        decoration: InputDecoration(
-                          border: InputBorder.none,
-                          hintText: 'Type here...',
-                          hintStyle: TextStyle(
-                            color: isDark ? Colors.white70 : Colors.black54,
+                      child: Shortcuts(
+                        shortcuts: {
+                          // Enter key submits (without Shift)
+                          const SingleActivator(LogicalKeyboardKey.enter): const _SubmitTextIntent(),
+                        },
+                        child: Actions(
+                          actions: {
+                            _SubmitTextIntent: CallbackAction<_SubmitTextIntent>(
+                              onInvoke: (intent) {
+                                setState(() {
+                                  final value = _textController.text;
+                                  if (value.isNotEmpty && _activeTextElement != null) {
+                                    _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+                                    if (_editingTextElementIndex != null) {
+                                      // Update existing text element
+                                      _textElements[_editingTextElementIndex!] = TextElement(
+                                        _activeTextElement!.position,
+                                        value,
+                                      );
+                                    } else {
+                                      // Add new text element
+                                      _textElements.add(TextElement(_activeTextElement!.position, value));
+                                    }
+                                    _redoStack.clear();
+                                    _saveCurrentData();
+                                  }
+                                  _activeTextElement = null;
+                                  _editingTextElementIndex = null;
+                                  _textController.clear();
+                                  _textFocusNode.unfocus();
+                                });
+                                return null;
+                              },
+                            ),
+                          },
+                          child: TextField(
+                            controller: _textController,
+                            focusNode: _textFocusNode,
+                            autofocus: true,
+                            keyboardType: TextInputType.multiline,
+                            textInputAction: TextInputAction.newline,
+                            maxLines: null,
+                            minLines: 1,
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: isDark ? Colors.white : Colors.black,
+                            ),
+                            decoration: InputDecoration(
+                              border: InputBorder.none,
+                              hintText: 'Type here... (Shift+Enter for new line)',
+                              hintStyle: TextStyle(
+                                color: isDark ? Colors.white70 : Colors.black54,
+                              ),
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                            ),
+                            onChanged: (value) {
+                              setState(() {
+                                if (_activeTextElement != null) {
+                                  _activeTextElement = TextElement(_activeTextElement!.position, value);
+                                }
+                              });
+                            },
                           ),
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 8),
                         ),
-                        onChanged: (value) {
-                          setState(() {
-                            if (_activeTextElement != null) {
-                              _activeTextElement = TextElement(_activeTextElement!.position, value);
-                            }
-                          });
-                        },
-                        onSubmitted: (value) {
-                          setState(() {
-                            if (value.isNotEmpty && _activeTextElement != null) {
-                              _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                              _textElements.add(TextElement(_activeTextElement!.position, value));
-                              _redoStack.clear();
-                              _saveCurrentData();
-                            }
-                            _activeTextElement = null;
-                            _textController.clear();
-                            _textFocusNode.unfocus();
-                          });
-                        },
                       ),
                     ),
                   );
@@ -1409,6 +1467,25 @@ class TextElement {
   final String text;
   TextElement(this.position, this.text);
 
+  /// Check if a point is within the bounds of this text element
+  bool hitTest(Offset point, {double fontSize = 16.0, Color textColor = Colors.black}) {
+    // Create a TextPainter to measure the text bounds (using markdown rendering for accurate size)
+    final textPainter = TextPainter(
+      text: _markdownToTextSpan(text, textColor, baseFontSize: fontSize),
+      textDirection: TextDirection.ltr,
+    );
+    textPainter.layout();
+    
+    final textRect = Rect.fromLTWH(
+      position.dx,
+      position.dy,
+      textPainter.width,
+      textPainter.height,
+    );
+    
+    return textRect.contains(point);
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'position': {'x': position.dx, 'y': position.dy},
@@ -1423,6 +1500,136 @@ class TextElement {
       json['text'] as String,
     );
   }
+}
+
+/// Convert markdown text to a styled TextSpan
+/// Supports: headers (#), bold (**text**), italic (*text*), inline code (`code`)
+TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseFontSize = 16.0}) {
+  if (markdownText.isEmpty) {
+    return TextSpan(text: '', style: TextStyle(color: textColor, fontSize: baseFontSize));
+  }
+  
+  // Parse markdown using regex (simpler and more reliable for basic markdown)
+  final lines = markdownText.split('\n');
+  
+  // Use a regex-based approach: parse line by line and handle inline formatting
+  List<TextSpan> children = [];
+  final baseStyle = TextStyle(color: textColor, fontSize: baseFontSize);
+  
+  // Process each line
+  for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    String line = lines[lineIndex];
+    if (line.isEmpty) {
+      if (lineIndex < lines.length - 1) {
+        children.add(TextSpan(text: '\n', style: baseStyle));
+      }
+      continue;
+    }
+    
+    // Check for headers
+    TextStyle lineStyle = baseStyle;
+    if (line.startsWith('# ')) {
+      line = line.substring(2);
+      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 2.0, fontWeight: FontWeight.bold);
+    } else if (line.startsWith('## ')) {
+      line = line.substring(3);
+      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.75, fontWeight: FontWeight.bold);
+    } else if (line.startsWith('### ')) {
+      line = line.substring(4);
+      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.5, fontWeight: FontWeight.bold);
+    } else if (line.startsWith('#### ')) {
+      line = line.substring(5);
+      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.25, fontWeight: FontWeight.bold);
+    } else if (line.startsWith('##### ') || line.startsWith('###### ')) {
+      line = line.replaceFirst(RegExp(r'^#{5,6} '), '');
+      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.1, fontWeight: FontWeight.bold);
+    }
+    
+    // Process inline formatting: **bold**, *italic*, `code`
+    int pos = 0;
+    while (pos < line.length) {
+      // Check for bold **text** or __text__
+      final boldMatch = RegExp(r'\*\*(.+?)\*\*|__(.+?)__').firstMatch(line.substring(pos));
+      // Check for italic *text* or _text_ (but not **)
+      final italicMatch = RegExp(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)').firstMatch(line.substring(pos));
+      // Check for inline code `code`
+      final codeMatch = RegExp(r'`(.+?)`').firstMatch(line.substring(pos));
+      
+      // Find the earliest match
+      int? earliestPos;
+      String? matchType;
+      String? matchText;
+      
+      if (boldMatch != null) {
+        final matchPos = pos + boldMatch.start;
+        if (earliestPos == null || matchPos < earliestPos) {
+          earliestPos = matchPos;
+          matchType = 'bold';
+          matchText = boldMatch.group(1) ?? boldMatch.group(2) ?? '';
+        }
+      }
+      
+      if (italicMatch != null) {
+        final matchPos = pos + italicMatch.start;
+        if (earliestPos == null || matchPos < earliestPos) {
+          earliestPos = matchPos;
+          matchType = 'italic';
+          matchText = italicMatch.group(1) ?? italicMatch.group(2) ?? '';
+        }
+      }
+      
+      if (codeMatch != null) {
+        final matchPos = pos + codeMatch.start;
+        if (earliestPos == null || matchPos < earliestPos) {
+          earliestPos = matchPos;
+          matchType = 'code';
+          matchText = codeMatch.group(1) ?? '';
+        }
+      }
+      
+      if (earliestPos != null && matchType != null && matchText != null) {
+        // Add text before the match
+        if (earliestPos > pos) {
+          children.add(TextSpan(text: line.substring(pos, earliestPos), style: lineStyle));
+        }
+        
+        // Add the formatted text
+        TextStyle formattedStyle = lineStyle;
+        if (matchType == 'bold') {
+          formattedStyle = lineStyle.copyWith(fontWeight: FontWeight.bold);
+        } else if (matchType == 'italic') {
+          formattedStyle = lineStyle.copyWith(fontStyle: FontStyle.italic);
+        } else if (matchType == 'code') {
+          formattedStyle = lineStyle.copyWith(
+            fontFamily: 'monospace',
+            backgroundColor: textColor.withOpacity(0.1),
+          );
+        }
+        children.add(TextSpan(text: matchText, style: formattedStyle));
+        
+        // Move position past the match
+        final matchLength = matchType == 'bold' ? matchText.length + 4 : 
+                           matchType == 'code' ? matchText.length + 2 : matchText.length + 2;
+        pos = earliestPos + matchLength;
+      } else {
+        // No more matches, add remaining text
+        children.add(TextSpan(text: line.substring(pos), style: lineStyle));
+        break;
+      }
+    }
+    
+    // Add newline after each line (except last)
+    if (lineIndex < lines.length - 1) {
+      children.add(TextSpan(text: '\n', style: baseStyle));
+    }
+  }
+  
+  // If no children were created, return simple TextSpan
+  if (children.isEmpty) {
+    return TextSpan(text: markdownText, style: baseStyle);
+  }
+  
+  return TextSpan(children: children, style: baseStyle);
 }
 
 class _CanvasPainter extends CustomPainter {
@@ -1518,10 +1725,8 @@ class _CanvasPainter extends CustomPainter {
     );
     for (final textElement in textElements) {
       if (textElement.text.isEmpty) continue;
-      textPainter.text = TextSpan(
-        text: textElement.text,
-        style: TextStyle(color: textColor, fontSize: 16),
-      );
+      // Convert markdown to styled TextSpan
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
       textPainter.layout();
       textPainter.paint(canvas, textElement.position);
     }

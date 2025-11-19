@@ -52,9 +52,29 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _createDB,
+      onUpgrade: _onUpgrade,
     );
+  }
+  
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Add tags column to notes table
+      await db.execute('ALTER TABLE notes ADD COLUMN tags TEXT');
+      // Create tags table for many-to-many relationship
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS note_tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          note_id INTEGER NOT NULL,
+          tag TEXT NOT NULL,
+          FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+          UNIQUE(note_id, tag)
+        )
+      ''');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_note_tags_note_id ON note_tags(note_id)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag)');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -64,7 +84,19 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        modified_at INTEGER NOT NULL
+        modified_at INTEGER NOT NULL,
+        tags TEXT
+      )
+    ''');
+    
+    // Note tags table (many-to-many relationship)
+    await db.execute('''
+      CREATE TABLE note_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        note_id INTEGER NOT NULL,
+        tag TEXT NOT NULL,
+        FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+        UNIQUE(note_id, tag)
       )
     ''');
 
@@ -105,6 +137,8 @@ class DatabaseHelper {
     // Create indices for better performance
     await db.execute('CREATE INDEX idx_strokes_note_id ON strokes(note_id)');
     await db.execute('CREATE INDEX idx_text_elements_note_id ON text_elements(note_id)');
+    await db.execute('CREATE INDEX idx_note_tags_note_id ON note_tags(note_id)');
+    await db.execute('CREATE INDEX idx_note_tags_tag ON note_tags(tag)');
   }
 
   // Note operations
@@ -128,14 +162,120 @@ class DatabaseHelper {
     return id;
   }
 
-  Future<List<Map<String, dynamic>>> getAllNotes() async {
+  Future<List<Map<String, dynamic>>> getAllNotes({String? searchQuery, String? sortBy, List<String>? filterTags}) async {
     final db = await database;
-    // Order by ID (creation order) instead of modified_at to prevent reordering
-    // when canvas data is saved
-    return await db.query(
+    String whereClause = '';
+    List<dynamic> whereArgs = [];
+    
+    // Build search query
+    if (searchQuery != null && searchQuery.isNotEmpty) {
+      whereClause = 'title LIKE ?';
+      whereArgs.add('%$searchQuery%');
+    }
+    
+    // Build tag filter
+    if (filterTags != null && filterTags.isNotEmpty) {
+      if (whereClause.isNotEmpty) {
+        whereClause += ' AND ';
+      }
+      final placeholders = filterTags.map((_) => '?').join(',');
+      whereClause += 'id IN (SELECT DISTINCT note_id FROM note_tags WHERE tag IN ($placeholders))';
+      whereArgs.addAll(filterTags);
+    }
+    
+    // Build sort clause
+    String orderBy = 'id ASC';
+    if (sortBy != null) {
+      switch (sortBy) {
+        case 'title':
+          orderBy = 'title ASC';
+          break;
+        case 'date_created':
+          orderBy = 'created_at ASC';
+          break;
+        case 'date_modified':
+          orderBy = 'modified_at DESC';
+          break;
+        default:
+          orderBy = 'id ASC';
+      }
+    }
+    
+    final notes = await db.query(
       'notes',
-      orderBy: 'id ASC',
+      where: whereClause.isEmpty ? null : whereClause,
+      whereArgs: whereArgs.isEmpty ? null : whereArgs,
+      orderBy: orderBy,
     );
+    
+    // Load tags for each note and create new maps (QueryRow is read-only)
+    final notesWithTags = <Map<String, dynamic>>[];
+    for (final note in notes) {
+      final noteId = note['id'] as int;
+      final tags = await getNoteTags(noteId);
+      // Create a new map instead of modifying the read-only QueryRow
+      notesWithTags.add({
+        'id': note['id'],
+        'title': note['title'],
+        'created_at': note['created_at'],
+        'modified_at': note['modified_at'],
+        'tags': tags,
+      });
+    }
+    
+    return notesWithTags;
+  }
+  
+  Future<List<String>> getNoteTags(int noteId) async {
+    final db = await database;
+    final tags = await db.query(
+      'note_tags',
+      where: 'note_id = ?',
+      whereArgs: [noteId],
+      columns: ['tag'],
+    );
+    return tags.map((row) => row['tag'] as String).toList();
+  }
+  
+  Future<void> setNoteTags(int noteId, List<String> tags) async {
+    final db = await database;
+    await db.delete('note_tags', where: 'note_id = ?', whereArgs: [noteId]);
+    for (final tag in tags) {
+      if (tag.trim().isNotEmpty) {
+        await db.insert('note_tags', {
+          'note_id': noteId,
+          'tag': tag.trim(),
+        });
+      }
+    }
+  }
+  
+  Future<List<String>> getAllTags() async {
+    final db = await database;
+    final tags = await db.query(
+      'note_tags',
+      columns: ['tag'],
+      distinct: true,
+    );
+    return tags.map((row) => row['tag'] as String).toSet().toList()..sort();
+  }
+  
+  Future<void> wipeDatabase() async {
+    final db = await database;
+    final batch = db.batch();
+    
+    // Delete all data from all tables
+    batch.delete('note_tags');
+    batch.delete('strokes');
+    batch.delete('text_elements');
+    batch.delete('canvas_state');
+    batch.delete('notes');
+    
+    await batch.commit(noResult: true);
+    
+    // Reset the database connection to ensure clean state
+    await db.close();
+    _database = null;
   }
 
   Future<Map<String, dynamic>?> getNote(int id) async {

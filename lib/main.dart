@@ -107,12 +107,20 @@ class NotesHomePage extends StatefulWidget {
 }
 
 class _NotesHomePageState extends State<NotesHomePage> {
-  final List<Map<String, dynamic>> notes = []; // {id, title}
+  final List<Map<String, dynamic>> notes = []; // {id, title, tags}
   int selectedIndex = 0;
   int? _editingIndex;
   final Map<int, TextEditingController> _noteControllers = {};
   final Map<int, NoteCanvasData> _noteCanvasData = {};
   bool _isLoading = true;
+  bool _isCreatingDefaultNote = false; // Flag to prevent recursion
+  
+  // Search and filter state
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  String _sortBy = 'id'; // 'id', 'title', 'date_created', 'date_modified'
+  List<String> _selectedTags = [];
+  List<String> _availableTags = [];
 
   @override
   void initState() {
@@ -122,16 +130,26 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
   Future<void> _loadNotes() async {
     try {
-      final notesList = await DatabaseHelper.instance.getAllNotes();
+      // Load available tags
+      final tags = await DatabaseHelper.instance.getAllTags();
+      
+      // Load notes with search, sort, and filter
+      final notesList = await DatabaseHelper.instance.getAllNotes(
+        searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
+        sortBy: _sortBy,
+        filterTags: _selectedTags.isEmpty ? null : _selectedTags,
+      );
       final List<Map<String, dynamic>> loadedNotes = [];
       final Map<int, NoteCanvasData> loadedCanvasData = {};
       
       // Load all notes and their canvas data before setting state
       for (final n in notesList) {
         final noteId = n['id'] as int;
+        final noteTags = n['tags'] as List<String>? ?? [];
         loadedNotes.add({
           'id': noteId,
           'title': n['title'] as String,
+          'tags': noteTags,
         });
         
         // Load canvas data for each note to ensure correct alignment
@@ -150,38 +168,103 @@ class _NotesHomePageState extends State<NotesHomePage> {
         }
       }
       
+      // If no notes exist, create a default one before setting state
+      // Use flag to prevent recursion
+      if (loadedNotes.isEmpty && !_isCreatingDefaultNote) {
+        _isCreatingDefaultNote = true;
+        await _createDefaultNote();
+        _isCreatingDefaultNote = false;
+        // _createDefaultNote will set _isLoading = false
+        return;
+      }
+      
       setState(() {
         notes.clear();
         notes.addAll(loadedNotes);
         _noteCanvasData.clear();
         _noteCanvasData.addAll(loadedCanvasData);
-        
-        // If no notes exist, create a default one
-        if (notes.isEmpty) {
-          _createDefaultNote();
-        } else {
-          selectedIndex = 0;
-        }
+        _availableTags = tags;
+        selectedIndex = 0;
         _isLoading = false;
       });
     } catch (e) {
       // If database doesn't exist yet, create default note
-      if (notes.isEmpty) {
+      // Use flag to prevent recursion
+      if (notes.isEmpty && !_isCreatingDefaultNote) {
+        _isCreatingDefaultNote = true;
         await _createDefaultNote();
+        _isCreatingDefaultNote = false;
+        // _createDefaultNote will handle setting _isLoading = false
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
       }
+    }
+  }
+  
+  void _applyFilters() {
+    setState(() {
+      _isLoading = true;
+    });
+    _loadNotes();
+  }
+
+  Future<void> _createDefaultNote() async {
+    try {
+      // First check if notes already exist to prevent duplicate creation
+      final existingNotes = await DatabaseHelper.instance.getAllNotes(
+        searchQuery: null,
+        sortBy: 'id',
+        filterTags: null,
+      );
+      
+      if (existingNotes.isNotEmpty) {
+        // Notes already exist, just load them normally
+        setState(() {
+          _isLoading = false;
+        });
+        // Don't call _loadNotes here to avoid recursion - let the caller handle it
+        return;
+      }
+      
+      // Clear filters when creating default note
+      _searchQuery = '';
+      _selectedTags.clear();
+      if (_searchController.text.isNotEmpty) {
+        _searchController.clear();
+      }
+      
+      final noteId = await DatabaseHelper.instance.createNote('New Note');
+      
+      // Load the note directly without calling _loadNotes to avoid recursion
+      final note = await DatabaseHelper.instance.getNote(noteId);
+      if (note != null) {
+        final noteTags = await DatabaseHelper.instance.getNoteTags(noteId);
+        final tags = await DatabaseHelper.instance.getAllTags();
+        
+        setState(() {
+          notes.clear();
+          notes.add({
+            'id': noteId,
+            'title': note['title'] as String,
+            'tags': noteTags,
+          });
+          _noteCanvasData[noteId] = NoteCanvasData();
+          _availableTags = tags;
+          selectedIndex = 0;
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
       setState(() {
         _isLoading = false;
       });
     }
-  }
-
-  Future<void> _createDefaultNote() async {
-    final noteId = await DatabaseHelper.instance.createNote('New Note');
-    setState(() {
-      notes.add({'id': noteId, 'title': 'New Note'});
-      selectedIndex = 0;
-      _noteCanvasData[noteId] = NoteCanvasData();
-    });
   }
 
   Future<void> _loadNoteData(int noteId) async {
@@ -350,11 +433,92 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 ),
               ),
             ),
+            // Search bar
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  hintText: 'Search notes...',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() {
+                              _searchQuery = '';
+                            });
+                            _applyFilters();
+                          },
+                        )
+                      : null,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value;
+                  });
+                  _applyFilters();
+                },
+              ),
+            ),
+            // Sort dropdown
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: DropdownButton<String>(
+                value: _sortBy,
+                isExpanded: true,
+                items: const [
+                  DropdownMenuItem(value: 'id', child: Text('Creation Order')),
+                  DropdownMenuItem(value: 'title', child: Text('Title (A-Z)')),
+                  DropdownMenuItem(value: 'date_created', child: Text('Date Created')),
+                  DropdownMenuItem(value: 'date_modified', child: Text('Recently Modified')),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      _sortBy = value;
+                    });
+                    _applyFilters();
+                  }
+                },
+              ),
+            ),
+            // Tags filter
+            if (_availableTags.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  children: _availableTags.map((tag) {
+                    final isSelected = _selectedTags.contains(tag);
+                    return FilterChip(
+                      label: Text(tag),
+                      selected: isSelected,
+                      onSelected: (selected) {
+                        setState(() {
+                          if (selected) {
+                            _selectedTags.add(tag);
+                          } else {
+                            _selectedTags.remove(tag);
+                          }
+                        });
+                        _applyFilters();
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
             Expanded(
               child: ListView.builder(
                 itemCount: notes.length,
                 itemBuilder: (context, i) {
                   final noteId = notes[i]['id'] as int;
+                  final noteTags = notes[i]['tags'] as List<String>? ?? [];
                   if (_editingIndex == i) {
                     if (!_noteControllers.containsKey(noteId)) {
                       _noteControllers[noteId] = TextEditingController(text: notes[i]['title'] as String);
@@ -429,6 +593,17 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   }
                   return ListTile(
                     title: Text(notes[i]['title'] as String),
+                    subtitle: noteTags.isNotEmpty
+                        ? Wrap(
+                            spacing: 4,
+                            runSpacing: 4,
+                            children: noteTags.map((tag) => Chip(
+                              label: Text(tag, style: const TextStyle(fontSize: 10)),
+                              padding: EdgeInsets.zero,
+                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            )).toList(),
+                          )
+                        : null,
                     selected: i == selectedIndex,
                     onTap: () async {
                       setState(() {
@@ -448,6 +623,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        IconButton(
+                          icon: const Icon(Icons.label_outline, size: 20),
+                          tooltip: 'Edit Tags',
+                          onPressed: () => _showTagEditor(context, noteId, noteTags),
+                        ),
                         IconButton(
                           icon: const Icon(Icons.edit, size: 20),
                           onPressed: () {
@@ -478,6 +658,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   MaterialPageRoute(
                     builder: (_) => SettingsPage(
                       onThemeModeChanged: widget.onThemeModeChanged,
+                      onDatabaseWiped: () {
+                        // Reload notes after database wipe
+                        _loadNotes();
+                      },
                     ),
                   ),
                 );
@@ -507,13 +691,29 @@ class _NotesHomePageState extends State<NotesHomePage> {
         heroTag: "add_note_fab",
         child: const Icon(Icons.add),
         onPressed: () async {
-          final noteId = await DatabaseHelper.instance.createNote('Note ${notes.length + 1}');
+          // Clear filters to ensure new note is visible
+          setState(() {
+            _searchQuery = '';
+            _selectedTags.clear();
+            _searchController.clear();
+          });
+          
+          // Get total note count for proper naming (ignoring filters)
+          final allNotes = await DatabaseHelper.instance.getAllNotes(searchQuery: null, sortBy: 'id', filterTags: null);
+          final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}');
           // Load the new note's data from database (even though it's empty, ensures consistency)
           await _loadNoteData(noteId);
+          await _loadNotes(); // Reload to get tags
           setState(() {
-            notes.add({'id': noteId, 'title': 'Note ${notes.length + 1}'});
-            selectedIndex = notes.length - 1;
-            // Ensure canvas data is set (should already be loaded above)
+            // Find the index of the newly created note
+            final index = notes.indexWhere((n) => n['id'] == noteId);
+            if (index >= 0) {
+              selectedIndex = index;
+            } else if (notes.isNotEmpty) {
+              // If note not found (shouldn't happen), select first note
+              selectedIndex = 0;
+            }
+            // Ensure canvas data is set
             if (!_noteCanvasData.containsKey(noteId)) {
               _noteCanvasData[noteId] = NoteCanvasData();
             }
@@ -523,12 +723,53 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
   }
   
+  Future<void> _showTagEditor(BuildContext context, int noteId, List<String> currentTags) async {
+    final tagController = TextEditingController(text: currentTags.join(', '));
+    final result = await showDialog<List<String>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Tags'),
+        content: TextField(
+          controller: tagController,
+          decoration: const InputDecoration(
+            hintText: 'Enter tags separated by commas',
+            labelText: 'Tags',
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              final tags = tagController.text
+                  .split(',')
+                  .map((t) => t.trim())
+                  .where((t) => t.isNotEmpty)
+                  .toList();
+              Navigator.pop(context, tags);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null) {
+      await DatabaseHelper.instance.setNoteTags(noteId, result);
+      await _loadNotes();
+    }
+  }
+  
   @override
   void dispose() {
     for (final controller in _noteControllers.values) {
       controller.dispose();
     }
     _noteControllers.clear();
+    _searchController.dispose();
     super.dispose();
   }
 }
@@ -1276,8 +1517,13 @@ class _CanvasPainter extends CustomPainter {
 
 class SettingsPage extends StatefulWidget {
   final Future<void> Function(ThemeMode) onThemeModeChanged;
+  final VoidCallback? onDatabaseWiped;
   
-  const SettingsPage({super.key, required this.onThemeModeChanged});
+  const SettingsPage({
+    super.key,
+    required this.onThemeModeChanged,
+    this.onDatabaseWiped,
+  });
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -1348,6 +1594,13 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const Divider(),
           ListTile(
+            leading: const Icon(Icons.delete_forever, color: Colors.red),
+            title: const Text('Wipe Database', style: TextStyle(color: Colors.red)),
+            subtitle: const Text('Delete all notes and data. This cannot be undone.'),
+            onTap: () => _showWipeDatabaseDialog(context),
+          ),
+          const Divider(),
+          ListTile(
             leading: const Icon(Icons.upload_file),
             title: const Text('Export Notes'),
             subtitle: const Text('Export all notes to JSON file'),
@@ -1388,6 +1641,59 @@ class _SettingsPageState extends State<SettingsPage> {
         return 'Always light';
       case ThemeMode.dark:
         return 'Always dark';
+    }
+  }
+  
+  Future<void> _showWipeDatabaseDialog(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Wipe Database'),
+        content: const Text(
+          'This will permanently delete ALL notes, drawings, text, and tags. '
+          'This action cannot be undone.\n\n'
+          'Are you absolutely sure you want to continue?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Wipe Database'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true && context.mounted) {
+      try {
+        await DatabaseHelper.instance.wipeDatabase();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Database wiped successfully'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+          // Trigger reload callback if provided
+          widget.onDatabaseWiped?.call();
+          // Navigate back
+          Navigator.pop(context);
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to wipe database: $e'),
+              backgroundColor: Colors.red,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+      }
     }
   }
 

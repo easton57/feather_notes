@@ -1188,16 +1188,30 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   
   // Calculate current viewport bounds in canvas coordinates
   Rect _calculateViewportBounds(Size screenSize) {
-    // Transform screen corners to canvas coordinates
-    final topLeft = _transformToLocal(Offset.zero);
-    final topRight = _transformToLocal(Offset(screenSize.width, 0));
-    final bottomLeft = _transformToLocal(Offset(0, screenSize.height));
-    final bottomRight = _transformToLocal(Offset(screenSize.width, screenSize.height));
+    // Transform screen corners to canvas coordinates using the inverse matrix
+    // The screen coordinates are relative to the Listener widget which fills the Stack
     
-    final minX = [topLeft.dx, topRight.dx, bottomLeft.dx, bottomRight.dx].reduce((a, b) => a < b ? a : b);
-    final minY = [topLeft.dy, topRight.dy, bottomLeft.dy, bottomRight.dy].reduce((a, b) => a < b ? a : b);
-    final maxX = [topLeft.dx, topRight.dx, bottomLeft.dx, bottomRight.dx].reduce((a, b) => a > b ? a : b);
-    final maxY = [topLeft.dy, topRight.dy, bottomLeft.dy, bottomRight.dy].reduce((a, b) => a > b ? a : b);
+    // Get the four corners of the visible screen area
+    final topLeft = Offset(0, 0);
+    final topRight = Offset(screenSize.width, 0);
+    final bottomLeft = Offset(0, screenSize.height);
+    final bottomRight = Offset(screenSize.width, screenSize.height);
+    
+    // Transform each corner to canvas coordinates
+    final canvasTopLeft = _transformToLocal(topLeft);
+    final canvasTopRight = _transformToLocal(topRight);
+    final canvasBottomLeft = _transformToLocal(bottomLeft);
+    final canvasBottomRight = _transformToLocal(bottomRight);
+    
+    // Find the bounding box of all transformed corners
+    // This gives us the actual viewport bounds in canvas coordinates
+    final xCoords = [canvasTopLeft.dx, canvasTopRight.dx, canvasBottomLeft.dx, canvasBottomRight.dx];
+    final yCoords = [canvasTopLeft.dy, canvasTopRight.dy, canvasBottomLeft.dy, canvasBottomRight.dy];
+    
+    final minX = xCoords.reduce((a, b) => a < b ? a : b);
+    final maxX = xCoords.reduce((a, b) => a > b ? a : b);
+    final minY = yCoords.reduce((a, b) => a < b ? a : b);
+    final maxY = yCoords.reduce((a, b) => a > b ? a : b);
     
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
@@ -1630,8 +1644,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 borderRadius: BorderRadius.circular(8),
                 color: Colors.grey[700],
                 child: IconButton(
-                  icon: Icon(_showToolMenu ? Icons.close : Icons.menu),
-                  tooltip: _showToolMenu ? 'Close Menu' : 'Open Menu',
+                  icon: Icon(_showToolMenu ? Icons.close : Icons.build),
+                  tooltip: _showToolMenu ? 'Close Toolbox' : 'Open Toolbox',
                   onPressed: () => setState(() => _showToolMenu = !_showToolMenu),
                 ),
               ),
@@ -2623,9 +2637,12 @@ class _MinimapPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
     
+    // Calculate viewport rectangle in minimap coordinates
+    // contentOffset already accounts for -contentBounds.left * scale
+    // So we just need to add viewportBounds.left * scale to position it correctly
     final viewportRect = Rect.fromLTWH(
-      (viewportBounds.left - contentBounds.left) * scale + contentOffset.dx,
-      (viewportBounds.top - contentBounds.top) * scale + contentOffset.dy,
+      viewportBounds.left * scale + contentOffset.dx,
+      viewportBounds.top * scale + contentOffset.dy,
       viewportBounds.width * scale,
       viewportBounds.height * scale,
     );

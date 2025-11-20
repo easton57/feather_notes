@@ -3,7 +3,7 @@
 
 **Project:** Feather Notes - Cross-Platform Note-Taking Application  
 **Date:** 2024  
-**Version:** 1.6  
+**Version:** 1.7  
 **Last Updated:** November 2025
 
 ---
@@ -386,10 +386,20 @@ CREATE TABLE canvas_state (
 - **Background Images**: Add images as canvas background
 - **Grid/Snap**: Show grid and snap-to-grid functionality
 - **Rulers**: Display rulers for precise measurements
-- **Zoom Controls**: UI controls for zoom (buttons, slider)
+- ✅ **Zoom Controls**: UI controls for zoom (buttons, slider) - **PARTIALLY COMPLETED**
+  - ✅ Minimap with viewport indicator - **COMPLETED** (viewport alignment being refined)
+  - ✅ Mouse wheel zoom - **COMPLETED**
+  - ✅ Two-finger pinch zoom - **COMPLETED**
+  - ✅ Right-click drag panning - **COMPLETED**
+  - ⚠️ Zoom UI controls (buttons, slider) - **PENDING**
 - **Canvas Templates**: Pre-defined canvas sizes (A4, Letter, etc.)
+- ✅ **Text Font Size Control**: Font size adjuster in text mode - **COMPLETED**
+  - ✅ Font size slider (8-48px) - **COMPLETED**
+  - ✅ Real-time font size preview - **COMPLETED**
+  - ✅ Applied to all text elements - **COMPLETED**
 
-**Estimated Effort:** 24-36 hours
+**Estimated Effort:** 24-36 hours  
+**Completed Effort:** ~6 hours (minimap, zoom controls, font size adjuster)
 
 ### 5.5 Performance Optimizations
 - **Canvas Rendering**: Optimize for large canvases (viewport culling)
@@ -623,8 +633,8 @@ CREATE TABLE canvas_state (
 ---
 
 **Document Status:** Active  
-**Last Updated:** November 2025  
-**Version:** 1.6  
+**Last Updated:** December 2025  
+**Version:** 1.7  
 **Next Review:** After Phase 3 completion
 
 ### Version History
@@ -700,4 +710,30 @@ CREATE TABLE canvas_state (
 - ✅ Added sync frequency selector UI
 - ✅ Phase 2 fully completed with all planned features
 - Updated SOW to reflect complete Cloud Sync implementation
+
+#### Version 1.7 (December 2025)
+- ✅ Code cleanup and optimization
+  - ✅ Removed all debug print statements (77 total)
+  - ✅ Removed unused imports (sync_provider, nextcloud_provider, conflict_resolution_dialog, sync_settings_page)
+  - ✅ Fixed code formatting and syntax issues
+  - ✅ Improved code maintainability
+- ✅ Enhanced UI/UX improvements
+  - ✅ Added collapsible toolbox menu for right-side buttons
+    - ✅ Menu toggle button with build icon
+    - ✅ All tool buttons (Undo, Redo, Eraser, Text Mode, Color Picker) now in collapsible menu
+    - ✅ Reduces UI clutter while maintaining full functionality
+  - ✅ Added font size adjuster for text mode
+    - ✅ Font size slider (8-48px range)
+    - ✅ +/- buttons for fine adjustment
+    - ✅ Real-time font size preview in text input
+    - ✅ Font size applied to all text elements on canvas
+    - ✅ Font size adjuster appears when text mode is active and toolbox menu is open
+  - ✅ Improved minimap viewport indicator
+    - ✅ Fixed viewport bounds calculation using corner transformation
+    - ✅ Improved viewport rectangle positioning in minimap
+    - ⚠️ Viewport alignment still being refined
+- ✅ Technical improvements
+  - ✅ Updated _CanvasPainter and _MinimapPainter to accept font size parameter
+  - ✅ Improved state management for text editing
+  - ✅ Enhanced coordinate transformation accuracy
 

@@ -446,19 +446,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final scaffoldKey = GlobalKey<ScaffoldState>();
+    
     return Scaffold(
+      key: scaffoldKey,
       backgroundColor: Theme.of(context).canvasColor,
-      appBar: AppBar(
-        title: Text(_isLoading 
-          ? 'Loading...' 
-          : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes')),
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
-        ),
-      ),
       drawer: Drawer(
         child: Column(
           children: [
@@ -708,55 +700,99 @@ class _NotesHomePageState extends State<NotesHomePage> {
           ],
         ),
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : (notes.isEmpty
-              ? const Center(child: Text('No notes available'))
-              : (selectedIndex >= 0 && selectedIndex < notes.length
-                  ? InfiniteCanvas(
-                      key: ValueKey('canvas_${notes[selectedIndex]['id']}'),
-                      noteId: notes[selectedIndex]['id'] as int,
-                      initialData: _noteCanvasData[notes[selectedIndex]['id'] as int] ?? NoteCanvasData(),
-                      onDataChanged: (data) async {
-                        if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                          final noteId = notes[selectedIndex]['id'] as int;
-                          await _saveNoteData(noteId, data);
+      body: Stack(
+        children: [
+          _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : (notes.isEmpty
+                  ? const Center(child: Text('No notes available'))
+                  : (selectedIndex >= 0 && selectedIndex < notes.length
+                      ? InfiniteCanvas(
+                          key: ValueKey('canvas_${notes[selectedIndex]['id']}'),
+                          noteId: notes[selectedIndex]['id'] as int,
+                          initialData: _noteCanvasData[notes[selectedIndex]['id'] as int] ?? NoteCanvasData(),
+                          onDataChanged: (data) async {
+                            if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                              final noteId = notes[selectedIndex]['id'] as int;
+                              await _saveNoteData(noteId, data);
+                            }
+                          },
+                        )
+                      : const Center(child: Text('No note selected')))),
+          // Floating buttons and title
+          Positioned(
+            top: 16,
+            left: 16,
+            child: Row(
+              children: [
+                // Hamburger menu button
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.menu),
+                    onPressed: () => scaffoldKey.currentState?.openDrawer(),
+                    tooltip: 'Menu',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Add note button
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'Add Note',
+                    onPressed: () async {
+                      // Clear filters to ensure new note is visible
+                      setState(() {
+                        _searchQuery = '';
+                        _selectedTags.clear();
+                        _searchController.clear();
+                      });
+                      
+                      // Get total note count for proper naming (ignoring filters)
+                      final allNotes = await DatabaseHelper.instance.getAllNotes(searchQuery: null, sortBy: 'id', filterTags: null);
+                      final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}');
+                      // Load the new note's data from database (even though it's empty, ensures consistency)
+                      await _loadNoteData(noteId);
+                      await _loadNotes(); // Reload to get tags
+                      setState(() {
+                        // Find the index of the newly created note
+                        final index = notes.indexWhere((n) => n['id'] == noteId);
+                        if (index >= 0) {
+                          selectedIndex = index;
+                        } else if (notes.isNotEmpty) {
+                          // If note not found (shouldn't happen), select first note
+                          selectedIndex = 0;
                         }
-                      },
-                    )
-                  : const Center(child: Text('No note selected')))),
-      floatingActionButton: FloatingActionButton(
-        heroTag: "add_note_fab",
-        child: const Icon(Icons.add),
-        onPressed: () async {
-          // Clear filters to ensure new note is visible
-          setState(() {
-            _searchQuery = '';
-            _selectedTags.clear();
-            _searchController.clear();
-          });
-          
-          // Get total note count for proper naming (ignoring filters)
-          final allNotes = await DatabaseHelper.instance.getAllNotes(searchQuery: null, sortBy: 'id', filterTags: null);
-          final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}');
-          // Load the new note's data from database (even though it's empty, ensures consistency)
-          await _loadNoteData(noteId);
-          await _loadNotes(); // Reload to get tags
-          setState(() {
-            // Find the index of the newly created note
-            final index = notes.indexWhere((n) => n['id'] == noteId);
-            if (index >= 0) {
-              selectedIndex = index;
-            } else if (notes.isNotEmpty) {
-              // If note not found (shouldn't happen), select first note
-              selectedIndex = 0;
-            }
-            // Ensure canvas data is set
-            if (!_noteCanvasData.containsKey(noteId)) {
-              _noteCanvasData[noteId] = NoteCanvasData();
-            }
-          });
-        },
+                        // Ensure canvas data is set
+                        if (!_noteCanvasData.containsKey(noteId)) {
+                          _noteCanvasData[noteId] = NoteCanvasData();
+                        }
+                      });
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Note title with transparent background
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Text(
+                    _isLoading 
+                        ? 'Loading...' 
+                        : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      color: Theme.of(context).textTheme.titleMedium?.color,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -866,6 +902,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   Offset? _panStartPosition; // Initial position when panning started
   Offset? _lastPanPosition; // Previous position for incremental delta calculation
   
+  // Minimap state
+  bool _showMinimap = true;
+  
   @override
   void initState() {
     super.initState();
@@ -963,6 +1002,74 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     final v = vm.Vector4(localPoint.dx, localPoint.dy, 0, 1);
     final r = _matrix.transform(v);
     return Offset(r.x, r.y);
+  }
+  
+  // Calculate bounds of all content (strokes and text)
+  Rect _calculateContentBounds() {
+    if (_strokes.isEmpty && _textElements.isEmpty) {
+      // Return default bounds if no content
+      return const Rect.fromLTWH(-1000, -1000, 2000, 2000);
+    }
+    
+    double minX = double.infinity;
+    double minY = double.infinity;
+    double maxX = double.negativeInfinity;
+    double maxY = double.negativeInfinity;
+    
+    // Check all stroke points
+    for (final stroke in _strokes) {
+      for (final point in stroke.points) {
+        minX = minX < point.position.dx ? minX : point.position.dx;
+        minY = minY < point.position.dy ? minY : point.position.dy;
+        maxX = maxX > point.position.dx ? maxX : point.position.dx;
+        maxY = maxY > point.position.dy ? maxY : point.position.dy;
+      }
+    }
+    
+    // Check all text elements
+    final brightness = Theme.of(context).brightness;
+    final isDark = brightness == Brightness.dark;
+    final textColor = isDark ? Colors.white : Colors.black;
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+    
+    for (final textElement in _textElements) {
+      if (textElement.text.isEmpty) continue;
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
+      textPainter.layout();
+      
+      final textWidth = textPainter.width;
+      final textHeight = textPainter.height;
+      
+      minX = minX < textElement.position.dx ? minX : textElement.position.dx;
+      minY = minY < textElement.position.dy ? minY : textElement.position.dy;
+      maxX = maxX > (textElement.position.dx + textWidth) ? maxX : (textElement.position.dx + textWidth);
+      maxY = maxY > (textElement.position.dy + textHeight) ? maxY : (textElement.position.dy + textHeight);
+    }
+    
+    // Add padding
+    const padding = 100.0;
+    return Rect.fromLTRB(
+      minX - padding,
+      minY - padding,
+      maxX + padding,
+      maxY + padding,
+    );
+  }
+  
+  // Calculate current viewport bounds in canvas coordinates
+  Rect _calculateViewportBounds(Size screenSize) {
+    // Transform screen corners to canvas coordinates
+    final topLeft = _transformToLocal(Offset.zero);
+    final topRight = _transformToLocal(Offset(screenSize.width, 0));
+    final bottomLeft = _transformToLocal(Offset(0, screenSize.height));
+    final bottomRight = _transformToLocal(Offset(screenSize.width, screenSize.height));
+    
+    final minX = [topLeft.dx, topRight.dx, bottomLeft.dx, bottomRight.dx].reduce((a, b) => a < b ? a : b);
+    final minY = [topLeft.dy, topRight.dy, bottomLeft.dy, bottomRight.dy].reduce((a, b) => a < b ? a : b);
+    final maxX = [topLeft.dx, topRight.dx, bottomLeft.dx, bottomRight.dx].reduce((a, b) => a > b ? a : b);
+    final maxY = [topLeft.dy, topRight.dy, bottomLeft.dy, bottomRight.dy].reduce((a, b) => a > b ? a : b);
+    
+    return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
   @override
@@ -1340,56 +1447,67 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           right: 16,
           child: Column(
             children: [
-              FloatingActionButton(
-                heroTag: "undo_fab",
-                mini: true,
-                tooltip: 'Undo',
-                child: const Icon(Icons.undo),
-                onPressed: undo,
-              ),
-              const SizedBox(height: 8),
-              FloatingActionButton(
-                heroTag: "redo_fab",
-                mini: true,
-                tooltip: 'Redo',
-                child: const Icon(Icons.redo),
-                onPressed: redo,
-              ),
-              const SizedBox(height: 8),
-              FloatingActionButton(
-                heroTag: "eraser_fab",
-                mini: true,
-                tooltip: 'Eraser',
-                child: Icon(_eraserMode ? Icons.brush : Icons.cleaning_services),
-                onPressed: () => setState(() => _eraserMode = !_eraserMode),
-              ),
-              const SizedBox(height: 8),
-              FloatingActionButton(
-                heroTag: "text_mode_fab",
-                mini: true,
-                tooltip: _textMode ? 'Drawing Mode' : 'Text Mode',
-                child: Icon(_textMode ? Icons.brush : Icons.text_fields),
-                onPressed: () => setState(() {
-                  _textMode = !_textMode;
-                  if (!_textMode) {
-                    _textFocusNode.unfocus();
-                    _activeTextElement = null;
-                    _editingTextElementIndex = null;
-                    _textController.clear();
-                  }
-                }),
-              ),
-              const SizedBox(height: 8),
-              FloatingActionButton(
-                heroTag: "color_picker_fab",
-                mini: true,
-                tooltip: 'Color Picker',
-                backgroundColor: _selectedColor,
-                child: Icon(
-                  Icons.palette,
-                  color: _selectedColor.computeLuminance() > 0.5 ? Colors.black : Colors.white,
+              Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.grey[700],
+                child: IconButton(
+                  icon: const Icon(Icons.undo),
+                  tooltip: 'Undo',
+                  onPressed: undo,
                 ),
-                onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+              ),
+              const SizedBox(height: 8),
+              Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.grey[700],
+                child: IconButton(
+                  icon: const Icon(Icons.redo),
+                  tooltip: 'Redo',
+                  onPressed: redo,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.grey[700],
+                child: IconButton(
+                  icon: Icon(_eraserMode ? Icons.brush : Icons.cleaning_services),
+                  tooltip: 'Eraser',
+                  onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.grey[700],
+                child: IconButton(
+                  icon: Icon(_textMode ? Icons.brush : Icons.text_fields),
+                  tooltip: _textMode ? 'Drawing Mode' : 'Text Mode',
+                  onPressed: () => setState(() {
+                    _textMode = !_textMode;
+                    if (!_textMode) {
+                      _textFocusNode.unfocus();
+                      _activeTextElement = null;
+                      _editingTextElementIndex = null;
+                      _textController.clear();
+                    }
+                  }),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Material(
+                elevation: 4,
+                borderRadius: BorderRadius.circular(8),
+                color: Colors.grey[700],
+                child: IconButton(
+                  icon: Icon(Icons.palette),
+                  tooltip: 'Color Picker',
+                  onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+                ),
               ),
             ],
           ),
@@ -1561,6 +1679,58 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   );
                 },
               ),
+            ),
+          ),
+        // Minimap
+        if (_showMinimap)
+          Positioned(
+            bottom: 16,
+            right: 16,
+            child: _MinimapWidget(
+              strokes: _strokes,
+              textElements: _textElements,
+              contentBounds: _calculateContentBounds(),
+              viewportBounds: _calculateViewportBounds(MediaQuery.of(context).size),
+              isDark: isDark,
+              onTap: (localPoint) {
+                // Pan to the clicked location on the minimap
+                final contentBounds = _calculateContentBounds();
+                final minimapSize = const Size(200, 200);
+                final scaleX = minimapSize.width / contentBounds.width;
+                final scaleY = minimapSize.height / contentBounds.height;
+                final scale = scaleX < scaleY ? scaleX : scaleY;
+                
+                // Calculate offset to center content in minimap
+                final offsetX = -contentBounds.left * scale;
+                final offsetY = -contentBounds.top * scale;
+                
+                // Convert minimap click position to canvas coordinates
+                final canvasX = (localPoint.dx - offsetX) / scale;
+                final canvasY = (localPoint.dy - offsetY) / scale;
+                final canvasPoint = Offset(canvasX, canvasY);
+                
+                // Center the viewport on this canvas point
+                final screenSize = MediaQuery.of(context).size;
+                final targetTranslation = vm.Vector3(
+                  screenSize.width / 2 - canvasPoint.dx,
+                  screenSize.height / 2 - canvasPoint.dy,
+                  0,
+                );
+                
+                setState(() {
+                  final currentTranslation = _matrix.getTranslation();
+                  final newX = targetTranslation.x;
+                  final newY = targetTranslation.y;
+                  final newZ = currentTranslation.z;
+                  
+                  final newMatrix = Matrix4.copy(_matrix);
+                  newMatrix.storage[12] = newX;
+                  newMatrix.storage[13] = newY;
+                  newMatrix.storage[14] = newZ;
+                  _matrix = newMatrix;
+                  _saveCurrentData();
+                });
+              },
             ),
           ),
       ],
@@ -1995,6 +2165,169 @@ class _CanvasPainter extends CustomPainter {
     if (strokes.length > oldDelegate.strokes.length) return true;
     
     return false;
+  }
+}
+
+class _MinimapWidget extends StatelessWidget {
+  final List<Stroke> strokes;
+  final List<TextElement> textElements;
+  final Rect contentBounds;
+  final Rect viewportBounds;
+  final bool isDark;
+  final Function(Offset) onTap;
+  
+  const _MinimapWidget({
+    required this.strokes,
+    required this.textElements,
+    required this.contentBounds,
+    required this.viewportBounds,
+    required this.isDark,
+    required this.onTap,
+  });
+  
+  @override
+  Widget build(BuildContext context) {
+    const minimapSize = Size(200, 200);
+    final scaleX = minimapSize.width / contentBounds.width;
+    final scaleY = minimapSize.height / contentBounds.height;
+    final scale = scaleX < scaleY ? scaleX : scaleY;
+    
+    return GestureDetector(
+      onTapDown: (details) {
+        // Convert tap position to canvas coordinates
+        final localPoint = details.localPosition;
+        onTap(localPoint);
+      },
+      child: Container(
+        width: minimapSize.width,
+        height: minimapSize.height,
+        decoration: BoxDecoration(
+          color: isDark ? const Color(0xFF1E1E1E) : Colors.grey.shade200,
+          border: Border.all(
+            color: isDark ? Colors.grey.shade700 : Colors.grey.shade400,
+            width: 2,
+          ),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: CustomPaint(
+            painter: _MinimapPainter(
+              strokes: strokes,
+              textElements: textElements,
+              contentBounds: contentBounds,
+              viewportBounds: viewportBounds,
+              scale: scale,
+              isDark: isDark,
+            ),
+            size: minimapSize,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MinimapPainter extends CustomPainter {
+  final List<Stroke> strokes;
+  final List<TextElement> textElements;
+  final Rect contentBounds;
+  final Rect viewportBounds;
+  final double scale;
+  final bool isDark;
+  
+  _MinimapPainter({
+    required this.strokes,
+    required this.textElements,
+    required this.contentBounds,
+    required this.viewportBounds,
+    required this.scale,
+    required this.isDark,
+  });
+  
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Draw background
+    final backgroundPaint = Paint()
+      ..color = isDark ? const Color(0xFF121212) : Colors.white
+      ..style = PaintingStyle.fill;
+    canvas.drawRect(Offset.zero & size, backgroundPaint);
+    
+    // Calculate offset to center content in minimap
+    final offsetX = -contentBounds.left * scale;
+    final offsetY = -contentBounds.top * scale;
+    final contentOffset = Offset(offsetX, offsetY);
+    
+    canvas.save();
+    canvas.translate(contentOffset.dx, contentOffset.dy);
+    canvas.scale(scale);
+    
+    // Draw strokes (simplified - just lines, no pressure)
+    for (final stroke in strokes) {
+      if (stroke.points.length < 2) continue;
+      
+      final paint = Paint()
+        ..color = stroke.color.withOpacity(0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0 / scale; // Scale down stroke width
+      
+      final path = Path();
+      path.moveTo(stroke.points.first.position.dx, stroke.points.first.position.dy);
+      for (var i = 1; i < stroke.points.length; i++) {
+        path.lineTo(stroke.points[i].position.dx, stroke.points[i].position.dy);
+      }
+      canvas.drawPath(path, paint);
+    }
+    
+    // Draw text elements (simplified - just rectangles)
+    final textColor = isDark ? Colors.white : Colors.black;
+    final textPaint = Paint()
+      ..color = textColor.withOpacity(0.4)
+      ..style = PaintingStyle.fill;
+    
+    final textPainter = TextPainter(textDirection: TextDirection.ltr);
+    for (final textElement in textElements) {
+      if (textElement.text.isEmpty) continue;
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
+      textPainter.layout();
+      
+      final textRect = Rect.fromLTWH(
+        textElement.position.dx,
+        textElement.position.dy,
+        textPainter.width,
+        textPainter.height,
+      );
+      canvas.drawRect(textRect, textPaint);
+    }
+    
+    canvas.restore();
+    
+    // Draw viewport indicator
+    final viewportPaint = Paint()
+      ..color = Colors.blue.withOpacity(0.3)
+      ..style = PaintingStyle.fill;
+    final viewportBorderPaint = Paint()
+      ..color = Colors.blue
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+    
+    final viewportRect = Rect.fromLTWH(
+      (viewportBounds.left - contentBounds.left) * scale + contentOffset.dx,
+      (viewportBounds.top - contentBounds.top) * scale + contentOffset.dy,
+      viewportBounds.width * scale,
+      viewportBounds.height * scale,
+    );
+    
+    canvas.drawRect(viewportRect, viewportPaint);
+    canvas.drawRect(viewportRect, viewportBorderPaint);
+  }
+  
+  @override
+  bool shouldRepaint(_MinimapPainter oldDelegate) {
+    return oldDelegate.strokes.length != strokes.length ||
+        oldDelegate.textElements.length != textElements.length ||
+        oldDelegate.viewportBounds != viewportBounds ||
+        oldDelegate.isDark != isDark;
   }
 }
 

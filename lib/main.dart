@@ -941,9 +941,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     
     // Listen for focus changes to track when text element has been focused
     _textFocusNode.addListener(() {
-      print('[FocusListener] hasFocus: ${_textFocusNode.hasFocus}, _activeTextElement: ${_activeTextElement != null}');
       if (_textFocusNode.hasFocus && _activeTextElement != null) {
-        print('[FocusListener] Setting _textElementHasBeenFocused = true');
         setState(() {
           _textElementHasBeenFocused = true;
         });
@@ -954,21 +952,15 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   @override
   void didUpdateWidget(InfiniteCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
-    print('[didUpdateWidget] Called - _activeTextElement: ${_activeTextElement != null}');
-    print('[didUpdateWidget] oldWidget.noteId: ${oldWidget.noteId}, widget.noteId: ${widget.noteId}');
-    print('[didUpdateWidget] oldWidget.initialData != widget.initialData: ${oldWidget.initialData != widget.initialData}');
     
     // If note ID changed, save current data and load the new note's canvas data
     if (oldWidget.noteId != widget.noteId) {
-      print('[didUpdateWidget] Note ID changed, reloading');
       _saveCurrentData();
       _loadCanvasData();
     } else if (oldWidget.initialData != widget.initialData) {
       // If same note but data changed (e.g., loaded from database), reload
       // BUT: NEVER reload if we have an active text element OR if one was recently created
       // This prevents the text box from disappearing during rebuilds
-      print('[didUpdateWidget] initialData changed, _activeTextElement: ${_activeTextElement != null}');
-      print('[didUpdateWidget] _textElementCreatedAt: $_textElementCreatedAt');
       
       // Check if text element was recently created (even if state was reset)
       final now = DateTime.now();
@@ -981,19 +973,13 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       if (_activeTextElement == null && !recentlyCreated && !hasText) {
         // Use a deep comparison to detect actual changes
         final dataEqual = _dataEquals(oldWidget.initialData, widget.initialData);
-        print('[didUpdateWidget] Data equal check: $dataEqual');
         if (!dataEqual) {
-          print('[didUpdateWidget] Reloading canvas data (no active text element, data changed)');
           _loadCanvasData();
         } else {
-          print('[didUpdateWidget] Data appears equal, skipping reload');
         }
       } else {
-        print('[didUpdateWidget] BLOCKING reload - active text element exists or recently created');
-        print('[didUpdateWidget] _activeTextElement: ${_activeTextElement != null}, recentlyCreated: $recentlyCreated');
       }
     } else {
-      print('[didUpdateWidget] No changes detected, skipping');
     }
   }
   
@@ -1007,8 +993,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   }
   
   void _loadCanvasData() {
-    print('[_loadCanvasData] Called - _activeTextElement: ${_activeTextElement != null}');
-    print('[_loadCanvasData] _textElementCreatedAt: $_textElementCreatedAt');
     
     // NEVER reload if we have an active text element OR if one was recently created
     // Check both the current state and the creation timestamp to catch cases where
@@ -1018,15 +1002,12 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         now.difference(_textElementCreatedAt!).inMilliseconds < 2000; // 2 seconds
     
     if (_activeTextElement != null || recentlyCreated) {
-      print('[_loadCanvasData] BLOCKED - active text element exists or recently created, skipping reload');
-      print('[_loadCanvasData] _activeTextElement: ${_activeTextElement != null}, recentlyCreated: $recentlyCreated');
       // Even if blocked, preserve the matrix to prevent it from changing
       return;
     }
     
     // Create a deep copy to ensure we're not sharing references
     final data = widget.initialData ?? NoteCanvasData();
-    print('[_loadCanvasData] Loading canvas data, initial matrix: ${data.matrix.getTranslation()}, scale: ${data.scale}');
     
     // PRESERVE active text element and related state - don't lose it during reload
     // (Even though we check above, preserve it just in case)
@@ -1042,17 +1023,14 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     setState(() {
       // If we have an active text element, DON'T change the matrix (lock position)
       if (preservedActiveTextElement != null && preservedMatrix != null) {
-        print('[_loadCanvasData] Preserving matrix to lock canvas position');
         _matrix = preservedMatrix;
         _scale = preservedScale ?? _scale;
       } else {
         // Validate and fix matrix if corrupted
         Matrix4 matrix = Matrix4.copy(data.matrix);
         final determinant = matrix.determinant();
-        print('[_loadCanvasData] Matrix determinant: $determinant');
         if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
           // Matrix is corrupted, reset to identity
-          print('[_loadCanvasData] Matrix corrupted, resetting to identity');
           matrix = Matrix4.identity();
         }
         _matrix = matrix;
@@ -1060,13 +1038,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         // Validate scale
         double scale = data.scale;
         if (!scale.isFinite || scale <= 0 || scale.isNaN) {
-          print('[_loadCanvasData] Scale invalid, resetting to 1.0');
           scale = 1.0;
         }
         _scale = scale;
       }
       
-      print('[_loadCanvasData] Final matrix: ${_matrix.getTranslation()}, scale: $_scale');
       
       // Create new lists to avoid reference sharing
       _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList();
@@ -1085,8 +1061,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       }
     });
     
-    print('[_loadCanvasData] After setState - _activeTextElement: ${_activeTextElement != null}');
-    print('[_loadCanvasData] After setState - _textElementCreatedAt: $_textElementCreatedAt');
   }
   
   @override
@@ -1110,11 +1084,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     // Don't save if we have an active text element that hasn't been focused yet
     // This prevents triggering parent reloads that cause the text box to disappear
     if (_activeTextElement != null && !_textElementHasBeenFocused) {
-      print('[_saveCurrentData] BLOCKED - active text element not yet focused, skipping save');
       return;
     }
     
-    print('[_saveCurrentData] Saving canvas data, matrix: ${_matrix.getTranslation()}, scale: $_scale');
     widget.onDataChanged(NoteCanvasData(
       strokes: _strokes,
       textElements: _textElements,
@@ -1141,7 +1113,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         _redoStack.clear();
         _saveCurrentData();
       }
-      print('[SubmitText] Submitting text and clearing text element');
       _activeTextElement = null;
       _editingTextElementIndex = null;
       _textController.clear();
@@ -1275,23 +1246,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             }
             
             // Handle mouse wheel scrolling
-            print('[onPointerSignal] kind: ${event.kind}');
             // Check if it's a scroll event by checking the kind
             if (event.kind == ui.PointerDeviceKind.mouse) {
               // Try to access scrollDelta if available
               try {
                 final scrollDelta = (event as dynamic).scrollDelta as Offset?;
-                print('[onPointerSignal] scrollDelta: $scrollDelta');
                 if (scrollDelta != null) {
-                  print('[onPointerSignal] Scrolling: matrix before: ${_matrix.getTranslation()}');
                   setState(() {
                     _matrix = _matrix..translateByDouble(-scrollDelta.dx, -scrollDelta.dy, 0, 0);
-                    print('[onPointerSignal] Scrolling: matrix after: ${_matrix.getTranslation()}');
                     _saveCurrentData();
                   });
                 }
               } catch (e) {
-                print('[onPointerSignal] Error accessing scrollDelta: $e');
                 // If scrollDelta is not available, ignore
               }
             }
@@ -1379,22 +1345,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               final isMouse = event.kind == ui.PointerDeviceKind.mouse;
               final isTouch = event.kind == ui.PointerDeviceKind.touch;
               
-              print('[onPointerDown] kind: ${event.kind}, buttons: ${event.buttons}, position: ${event.localPosition}');
-              print('[onPointerDown] isMouse: $isMouse, isTouch: $isTouch, _pointerCount: $_pointerCount, _textMode: $_textMode, _currentStroke: ${_currentStroke != null}');
               
               // Check for right-click panning FIRST (before drawing)
               // Note: buttons might not be set on onPointerDown, so we'll also check in onPointerMove
               // But we can prevent stroke creation here if buttons is available
               if (isMouse && event.buttons == 2) {
                 // Right-click panning - prevent drawing
-                print('[onPointerDown] Right-click detected (buttons=2), starting panning');
                 setState(() {
                   _isPanning = true;
                   _panStartPosition = event.localPosition;
                   _lastPanPosition = event.localPosition; // Initialize last position
                   // Cancel any active stroke
                   if (_currentStroke != null) {
-                    print('[onPointerDown] Cancelling active stroke for panning');
                     // Remove the stroke from strokes list if it was just added
                     if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
                       _strokes.removeLast();
@@ -1407,13 +1369,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               
               // Don't start drawing if we're panning
               if (_isPanning) {
-                print('[onPointerDown] Skipping drawing because panning is active');
                 return;
               }
               
               // Don't start drawing if two fingers are down (two-finger panning/zooming)
               if (_pointerCount >= 2) {
-                print('[onPointerDown] Skipping drawing because two fingers are active');
                 return;
               }
               
@@ -1421,7 +1381,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               if (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode)) {
                 // Double-check we're not panning (buttons might not have been set on down)
                 if (isMouse && event.buttons == 2) {
-                  print('[onPointerDown] Right-click detected during drawing check, starting panning instead');
                   setState(() {
                     _isPanning = true;
                     _panStartPosition = event.localPosition;
@@ -1464,11 +1423,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                 }
                 
-                print('[onPointerDown] Creating text element at: $local');
                 setState(() {
                   if (clickedTextIndex != null) {
                     // Edit existing text element
-                    print('[onPointerDown] Editing existing text element at index: $clickedTextIndex');
                     _editingTextElementIndex = clickedTextIndex;
                     _activeTextElement = TextElement(
                       _textElements[clickedTextIndex].position,
@@ -1477,7 +1434,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _textController.text = _textElements[clickedTextIndex].text;
                   } else {
                     // Create new text element
-                    print('[onPointerDown] Creating new text element');
                     _editingTextElementIndex = null;
                     _activeTextElement = TextElement(local, '');
                     _textController.clear();
@@ -1485,31 +1441,23 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   // Track when text element was created to prevent immediate dismissal
                   _textElementCreatedAt = DateTime.now();
                   _textElementHasBeenFocused = false; // Reset focus tracking
-                  print('[onPointerDown] _textElementCreatedAt: $_textElementCreatedAt, _textElementHasBeenFocused: $_textElementHasBeenFocused');
                 });
                 
                 // Request focus using post-frame callback to ensure widget is built and stable
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   // Use a small delay to ensure the TextField widget is fully built
                   Future.delayed(const Duration(milliseconds: 100), () {
-                    print('[FocusRequest] Post-frame focus request - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}');
                     if (mounted && _activeTextElement != null) {
-                      print('[FocusRequest] Requesting focus...');
                       _textFocusNode.requestFocus();
-                      print('[FocusRequest] Focus requested, hasFocus: ${_textFocusNode.hasFocus}');
                       // Mark as focused after a short delay to ensure focus is actually set
                       Future.delayed(const Duration(milliseconds: 150), () {
-                        print('[FocusCheck] Checking focus after delay - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}, hasFocus: ${_textFocusNode.hasFocus}');
                         if (mounted && _activeTextElement != null && _textFocusNode.hasFocus) {
-                          print('[FocusCheck] Setting _textElementHasBeenFocused = true');
                           setState(() {
                             _textElementHasBeenFocused = true;
                           });
                         } else {
-                          print('[FocusCheck] Focus not set - _activeTextElement: ${_activeTextElement != null}, hasFocus: ${_textFocusNode.hasFocus}');
                           // Retry focus request if it failed
                           if (mounted && _activeTextElement != null && !_textFocusNode.hasFocus) {
-                            print('[FocusCheck] Retrying focus request...');
                             _textFocusNode.requestFocus();
                           }
                         }
@@ -1521,7 +1469,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         );
                       }
                     } else {
-                      print('[FocusRequest] Cannot request focus - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}');
                     }
                   });
                 });
@@ -1535,20 +1482,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               final isMouse = event.kind == ui.PointerDeviceKind.mouse;
               final isTouch = event.kind == ui.PointerDeviceKind.touch;
               
-              print('[onPointerMove] kind: ${event.kind}, buttons: ${event.buttons}, position: ${event.localPosition}');
-              print('[onPointerMove] isMouse: $isMouse, _isPanning: $_isPanning, _currentStroke: ${_currentStroke != null}');
               
               // Check for right-click panning (buttons == 2 means right mouse button)
               if (isMouse && event.buttons == 2 && !_isPanning) {
                 // Start right-click panning
-                print('[onPointerMove] Starting right-click panning');
                 setState(() {
                   _isPanning = true;
                   _panStartPosition = event.localPosition;
                   _lastPanPosition = event.localPosition; // Initialize last position
                   // Cancel any active stroke that might have been created
                   if (_currentStroke != null) {
-                    print('[onPointerMove] Cancelling active stroke for panning');
                     // Remove the stroke from strokes list if it was just added
                     if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
                       _strokes.removeLast();
@@ -1577,7 +1520,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 final dx = event.localPosition.dx - _lastPanPosition!.dx;
                 final dy = event.localPosition.dy - _lastPanPosition!.dy;
                 final translationBefore = _matrix.getTranslation();
-                print('[onPointerMove] Panning: delta=($dx, $dy), matrix translation before: $translationBefore');
                 
                 // Validate delta before applying (prevent NaN or infinite values)
                 if (dx.isFinite && dy.isFinite && !dx.isNaN && !dy.isNaN) {
@@ -1600,19 +1542,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     
                     _lastPanPosition = event.localPosition; // Update last position for next frame
                     final translationAfter = _matrix.getTranslation();
-                    print('[onPointerMove] Panning: matrix translation after: $translationAfter');
                     // Don't save on every move to avoid performance issues
                     // Save will happen on pointer up
                   });
                 } else {
-                  print('[onPointerMove] Invalid delta detected: ($dx, $dy), skipping panning');
                 }
                 return;
               }
               
               // If we were panning but buttons changed, stop panning
               if (_isPanning && isMouse && event.buttons != 2) {
-                print('[onPointerMove] Stopping panning (buttons changed to ${event.buttons})');
                 setState(() {
                   _isPanning = false;
                   _panStartPosition = null;
@@ -1647,11 +1586,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               }
             },
             onPointerUp: (event) {
-              print('[onPointerUp] kind: ${event.kind}, buttons: ${event.buttons}, _isPanning: $_isPanning');
               
               // End panning if active
               if (_isPanning) {
-                print('[onPointerUp] Ending panning');
                 setState(() {
                   _isPanning = false;
                   _panStartPosition = null;
@@ -1721,7 +1658,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   onPressed: () => setState(() {
                     _textMode = !_textMode;
                     if (!_textMode) {
-                      print('[TextModeToggle] Switching to draw mode - clearing text element');
                       _textFocusNode.unfocus();
                       _activeTextElement = null;
                       _editingTextElementIndex = null;
@@ -1797,19 +1733,12 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
                 onTap: () {
-                  print('[DismissHandler] onTap called');
-                  print('[DismissHandler] _activeTextElement: ${_activeTextElement != null}');
-                  print('[DismissHandler] _textElementCreatedAt: $_textElementCreatedAt');
-                  print('[DismissHandler] _textElementHasBeenFocused: $_textElementHasBeenFocused');
-                  print('[DismissHandler] _textFocusNode.hasFocus: ${_textFocusNode.hasFocus}');
                   
                   // Prevent dismissal if text element was just created (within last 1500ms to be safe)
                   final now = DateTime.now();
                   if (_textElementCreatedAt != null) {
                     final timeSinceCreation = now.difference(_textElementCreatedAt!).inMilliseconds;
-                    print('[DismissHandler] Time since creation: ${timeSinceCreation}ms');
                     if (timeSinceCreation < 1500) {
-                      print('[DismissHandler] Blocking dismissal - text element just created');
                       return; // Don't dismiss if just created
                     }
                   }
@@ -1817,9 +1746,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   // Only dismiss if:
                   // 1. The text element has been focused at least once (to avoid dismissing before focus is set)
                   // 2. Focus is not currently active (user clicked outside after focusing)
-                  print('[DismissHandler] Checking dismiss conditions...');
                   if (_textElementHasBeenFocused && !_textFocusNode.hasFocus) {
-                    print('[DismissHandler] Dismissing text element');
                     setState(() {
                       if (_textController.text.isNotEmpty && _activeTextElement != null) {
                         _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
@@ -1836,7 +1763,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         _redoStack.clear();
                         _saveCurrentData();
                       }
-                      print('[DismissHandler] Clearing text element');
                       _activeTextElement = null;
                       _editingTextElementIndex = null;
                       _textController.clear();
@@ -1845,7 +1771,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       _textFocusNode.unfocus();
                     });
                   } else {
-                    print('[DismissHandler] Not dismissing - _textElementHasBeenFocused: $_textElementHasBeenFocused, hasFocus: ${_textFocusNode.hasFocus}');
                   }
                 },
                 child: Container(color: Colors.transparent),
@@ -1858,7 +1783,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               child: GestureDetector(
                 onTap: () {
                   // Prevent tap from propagating to dismiss handler
-                  print('[TextBox] onTap - preventing propagation');
                 },
                 behavior: HitTestBehavior.opaque,
                 child: Builder(
@@ -2733,7 +2657,6 @@ class _SettingsPageState extends State<SettingsPage> {
           final canvas = noteData['canvas'] as Map<String, dynamic>?;
           
           if (note == null || canvas == null) {
-            print('Sync: Error: Note data missing note or canvas: $noteData');
             return;
           }
           

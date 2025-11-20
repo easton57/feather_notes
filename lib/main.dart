@@ -123,6 +123,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
   bool _isLoading = true;
   bool _isCreatingDefaultNote = false; // Flag to prevent recursion
   
+  // GlobalKey to preserve InfiniteCanvas state across rebuilds
+  final Map<int, GlobalKey> _canvasKeys = {};
+  
   // Search and filter state
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -334,8 +337,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
       matrix: Matrix4.copy(data.matrix),
       scale: data.scale,
     );
-    _noteCanvasData[noteId] = dataCopy;
-    await DatabaseHelper.instance.saveCanvasData(noteId, dataCopy);
+    // Only update if data actually changed to prevent unnecessary rebuilds
+    final existingData = _noteCanvasData[noteId];
+    if (existingData == null || 
+        existingData.strokes.length != dataCopy.strokes.length ||
+        existingData.textElements.length != dataCopy.textElements.length ||
+        existingData.matrix != dataCopy.matrix ||
+        existingData.scale != dataCopy.scale) {
+      _noteCanvasData[noteId] = dataCopy;
+      await DatabaseHelper.instance.saveCanvasData(noteId, dataCopy);
+    }
   }
 
   Future<void> _deleteNote(BuildContext context, int index, int noteId) async {
@@ -707,21 +718,27 @@ class _NotesHomePageState extends State<NotesHomePage> {
               : (notes.isEmpty
                   ? const Center(child: Text('No notes available'))
                   : (selectedIndex >= 0 && selectedIndex < notes.length
-                      ? InfiniteCanvas(
-                          key: ValueKey('canvas_${notes[selectedIndex]['id']}'),
-                          noteId: notes[selectedIndex]['id'] as int,
-                          initialData: _noteCanvasData[notes[selectedIndex]['id'] as int] ?? NoteCanvasData(),
-                          onDataChanged: (data) async {
-                            if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                              final noteId = notes[selectedIndex]['id'] as int;
-                              await _saveNoteData(noteId, data);
-                            }
-                          },
-                        )
+                      ? () {
+                          final noteId = notes[selectedIndex]['id'] as int;
+                          // Get or create a GlobalKey for this note's canvas to preserve state
+                          if (!_canvasKeys.containsKey(noteId)) {
+                            _canvasKeys[noteId] = GlobalKey();
+                          }
+                          return InfiniteCanvas(
+                            key: _canvasKeys[noteId],
+                            noteId: noteId,
+                            initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
+                            onDataChanged: (data) async {
+                              if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                                await _saveNoteData(noteId, data);
+                              }
+                            },
+                          );
+                        }()
                       : const Center(child: Text('No note selected')))),
           // Floating buttons and title
           Positioned(
-            top: 16,
+            top: MediaQuery.of(context).padding.top + 16,
             left: 16,
             child: Row(
               children: [
@@ -777,15 +794,25 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // Note title with transparent background
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Text(
-                    _isLoading 
-                        ? 'Loading...' 
-                        : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      color: Theme.of(context).textTheme.titleMedium?.color,
+                // Note title with same background and height as buttons
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: SizedBox(
+                    height: 48, // Match IconButton height (48px)
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          _isLoading 
+                              ? 'Loading...' 
+                              : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -890,6 +917,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   int? _editingTextElementIndex; // Index of text element being edited, null if creating new
   final FocusNode _textFocusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
+  DateTime? _textElementCreatedAt; // Track when text element was created to prevent immediate dismissal
+  bool _textElementHasBeenFocused = false; // Track if text element has ever received focus
 
   Offset _lastFocalPoint = Offset.zero;
   int _pointerCount = 0;
@@ -909,21 +938,62 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   void initState() {
     super.initState();
     _loadCanvasData();
+    
+    // Listen for focus changes to track when text element has been focused
+    _textFocusNode.addListener(() {
+      print('[FocusListener] hasFocus: ${_textFocusNode.hasFocus}, _activeTextElement: ${_activeTextElement != null}');
+      if (_textFocusNode.hasFocus && _activeTextElement != null) {
+        print('[FocusListener] Setting _textElementHasBeenFocused = true');
+        setState(() {
+          _textElementHasBeenFocused = true;
+        });
+      }
+    });
   }
   
   @override
   void didUpdateWidget(InfiniteCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
+    print('[didUpdateWidget] Called - _activeTextElement: ${_activeTextElement != null}');
+    print('[didUpdateWidget] oldWidget.noteId: ${oldWidget.noteId}, widget.noteId: ${widget.noteId}');
+    print('[didUpdateWidget] oldWidget.initialData != widget.initialData: ${oldWidget.initialData != widget.initialData}');
+    
     // If note ID changed, save current data and load the new note's canvas data
     if (oldWidget.noteId != widget.noteId) {
+      print('[didUpdateWidget] Note ID changed, reloading');
       _saveCurrentData();
       _loadCanvasData();
     } else if (oldWidget.initialData != widget.initialData) {
       // If same note but data changed (e.g., loaded from database), reload
-      // Use a deep comparison to detect actual changes
-      if (!_dataEquals(oldWidget.initialData, widget.initialData)) {
-        _loadCanvasData();
+      // BUT: NEVER reload if we have an active text element OR if one was recently created
+      // This prevents the text box from disappearing during rebuilds
+      print('[didUpdateWidget] initialData changed, _activeTextElement: ${_activeTextElement != null}');
+      print('[didUpdateWidget] _textElementCreatedAt: $_textElementCreatedAt');
+      
+      // Check if text element was recently created (even if state was reset)
+      final now = DateTime.now();
+      final recentlyCreated = _textElementCreatedAt != null && 
+          now.difference(_textElementCreatedAt!).inMilliseconds < 5000; // 5 seconds - increased for safety
+      
+      // Also check if text controller has text (indicates active editing)
+      final hasText = _textController.text.isNotEmpty;
+      
+      if (_activeTextElement == null && !recentlyCreated && !hasText) {
+        // Use a deep comparison to detect actual changes
+        final dataEqual = _dataEquals(oldWidget.initialData, widget.initialData);
+        print('[didUpdateWidget] Data equal check: $dataEqual');
+        if (!dataEqual) {
+          print('[didUpdateWidget] Reloading canvas data (no active text element, data changed)');
+          _loadCanvasData();
+        } else {
+          print('[didUpdateWidget] Data appears equal, skipping reload');
+        }
+      } else {
+        print('[didUpdateWidget] BLOCKING reload - active text element exists or recently created');
+        print('[didUpdateWidget] _activeTextElement: ${_activeTextElement != null}, recentlyCreated: $recentlyCreated');
       }
+    } else {
+      print('[didUpdateWidget] No changes detected, skipping');
     }
   }
   
@@ -937,28 +1007,64 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   }
   
   void _loadCanvasData() {
+    print('[_loadCanvasData] Called - _activeTextElement: ${_activeTextElement != null}');
+    print('[_loadCanvasData] _textElementCreatedAt: $_textElementCreatedAt');
+    
+    // NEVER reload if we have an active text element OR if one was recently created
+    // Check both the current state and the creation timestamp to catch cases where
+    // the widget was rebuilt and state was reset but the text element should still exist
+    final now = DateTime.now();
+    final recentlyCreated = _textElementCreatedAt != null && 
+        now.difference(_textElementCreatedAt!).inMilliseconds < 2000; // 2 seconds
+    
+    if (_activeTextElement != null || recentlyCreated) {
+      print('[_loadCanvasData] BLOCKED - active text element exists or recently created, skipping reload');
+      print('[_loadCanvasData] _activeTextElement: ${_activeTextElement != null}, recentlyCreated: $recentlyCreated');
+      // Even if blocked, preserve the matrix to prevent it from changing
+      return;
+    }
+    
     // Create a deep copy to ensure we're not sharing references
     final data = widget.initialData ?? NoteCanvasData();
     print('[_loadCanvasData] Loading canvas data, initial matrix: ${data.matrix.getTranslation()}, scale: ${data.scale}');
+    
+    // PRESERVE active text element and related state - don't lose it during reload
+    // (Even though we check above, preserve it just in case)
+    final preservedActiveTextElement = _activeTextElement;
+    final preservedEditingTextElementIndex = _editingTextElementIndex;
+    final preservedTextElementCreatedAt = _textElementCreatedAt;
+    final preservedTextElementHasBeenFocused = _textElementHasBeenFocused;
+    final preservedTextControllerText = _textController.text;
+    // PRESERVE current matrix if text element is active (lock position)
+    final preservedMatrix = _activeTextElement != null ? Matrix4.copy(_matrix) : null;
+    final preservedScale = _activeTextElement != null ? _scale : null;
+    
     setState(() {
-      // Validate and fix matrix if corrupted
-      Matrix4 matrix = Matrix4.copy(data.matrix);
-      final determinant = matrix.determinant();
-      print('[_loadCanvasData] Matrix determinant: $determinant');
-      if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
-        // Matrix is corrupted, reset to identity
-        print('[_loadCanvasData] Matrix corrupted, resetting to identity');
-        matrix = Matrix4.identity();
+      // If we have an active text element, DON'T change the matrix (lock position)
+      if (preservedActiveTextElement != null && preservedMatrix != null) {
+        print('[_loadCanvasData] Preserving matrix to lock canvas position');
+        _matrix = preservedMatrix;
+        _scale = preservedScale ?? _scale;
+      } else {
+        // Validate and fix matrix if corrupted
+        Matrix4 matrix = Matrix4.copy(data.matrix);
+        final determinant = matrix.determinant();
+        print('[_loadCanvasData] Matrix determinant: $determinant');
+        if (!determinant.isFinite || determinant == 0 || determinant.isNaN) {
+          // Matrix is corrupted, reset to identity
+          print('[_loadCanvasData] Matrix corrupted, resetting to identity');
+          matrix = Matrix4.identity();
+        }
+        _matrix = matrix;
+        
+        // Validate scale
+        double scale = data.scale;
+        if (!scale.isFinite || scale <= 0 || scale.isNaN) {
+          print('[_loadCanvasData] Scale invalid, resetting to 1.0');
+          scale = 1.0;
+        }
+        _scale = scale;
       }
-      _matrix = matrix;
-      
-      // Validate scale
-      double scale = data.scale;
-      if (!scale.isFinite || scale <= 0 || scale.isNaN) {
-        print('[_loadCanvasData] Scale invalid, resetting to 1.0');
-        scale = 1.0;
-      }
-      _scale = scale;
       
       print('[_loadCanvasData] Final matrix: ${_matrix.getTranslation()}, scale: $_scale');
       
@@ -968,7 +1074,19 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       _currentStroke = null;
       _undoStack.clear();
       _redoStack.clear();
+      
+      // RESTORE preserved text element state
+      _activeTextElement = preservedActiveTextElement;
+      _editingTextElementIndex = preservedEditingTextElementIndex;
+      _textElementCreatedAt = preservedTextElementCreatedAt;
+      _textElementHasBeenFocused = preservedTextElementHasBeenFocused;
+      if (preservedTextControllerText.isNotEmpty) {
+        _textController.text = preservedTextControllerText;
+      }
     });
+    
+    print('[_loadCanvasData] After setState - _activeTextElement: ${_activeTextElement != null}');
+    print('[_loadCanvasData] After setState - _textElementCreatedAt: $_textElementCreatedAt');
   }
   
   @override
@@ -989,6 +1107,13 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   }
   
   void _saveCurrentData() {
+    // Don't save if we have an active text element that hasn't been focused yet
+    // This prevents triggering parent reloads that cause the text box to disappear
+    if (_activeTextElement != null && !_textElementHasBeenFocused) {
+      print('[_saveCurrentData] BLOCKED - active text element not yet focused, skipping save');
+      return;
+    }
+    
     print('[_saveCurrentData] Saving canvas data, matrix: ${_matrix.getTranslation()}, scale: $_scale');
     widget.onDataChanged(NoteCanvasData(
       strokes: _strokes,
@@ -996,6 +1121,34 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       matrix: _matrix,
       scale: _scale,
     ));
+  }
+  
+  void _submitText() {
+    setState(() {
+      final value = _textController.text;
+      if (value.isNotEmpty && _activeTextElement != null) {
+        _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+        if (_editingTextElementIndex != null) {
+          // Update existing text element
+          _textElements[_editingTextElementIndex!] = TextElement(
+            _activeTextElement!.position,
+            value,
+          );
+        } else {
+          // Add new text element
+          _textElements.add(TextElement(_activeTextElement!.position, value));
+        }
+        _redoStack.clear();
+        _saveCurrentData();
+      }
+      print('[SubmitText] Submitting text and clearing text element');
+      _activeTextElement = null;
+      _editingTextElementIndex = null;
+      _textController.clear();
+      _textElementCreatedAt = null;
+      _textElementHasBeenFocused = false;
+      _textFocusNode.unfocus();
+    });
   }
   
   Offset _transformToScreen(Offset localPoint) {
@@ -1116,6 +1269,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           onPointerDown: (e) => setState(() => _pointerCount++),
           onPointerUp: (e) => setState(() => _pointerCount = (_pointerCount - 1).clamp(0, 10)),
           onPointerSignal: (event) {
+            // Lock canvas position when text box is active
+            if (_activeTextElement != null) {
+              return; // Don't allow scrolling while text box is active
+            }
+            
             // Handle mouse wheel scrolling
             print('[onPointerSignal] kind: ${event.kind}');
             // Check if it's a scroll event by checking the kind
@@ -1140,21 +1298,55 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           },
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onScaleStart: (details) => _lastFocalPoint = details.focalPoint,
-                  onScaleUpdate: (details) {
+            onScaleStart: (details) {
+              _lastFocalPoint = details.focalPoint;
+              _scale = 1.0; // Initialize scale to 1.0 for relative scaling
+            },
+            onScaleUpdate: (details) {
+              // Lock canvas position/zoom when text box is active
+              if (_activeTextElement != null) {
+                return; // Don't allow panning/zooming while text box is active
+              }
+              
               if (details.pointerCount >= 2) {
                 setState(() {
+                  // Handle panning (translation)
                   final dx = details.focalPoint.dx - _lastFocalPoint.dx;
                   final dy = details.focalPoint.dy - _lastFocalPoint.dy;
-                  _matrix = _matrix..translateByDouble(dx, dy, 0, 0);
-
+                  
+                  // Handle zooming (scaling)
                   final newScale = details.scale;
                   final scaleFactor = newScale / _scale;
                   _scale = newScale;
-
+                  
+                  // Get current matrix values
+                  final currentTranslation = _matrix.getTranslation();
+                  
+                  // Apply translation first (accumulate)
+                  final newX = currentTranslation.x + dx;
+                  final newY = currentTranslation.y + dy;
+                  final newZ = currentTranslation.z;
+                  
+                  // Apply scaling around focal point
+                  // First, transform focal point to local coordinates
                   final focal = _transformToLocal(details.focalPoint);
-                  _matrix = _matrix..translateByDouble(focal.dx, focal.dy, 0, 0)..scaleByDouble(scaleFactor, scaleFactor, scaleFactor, 1)..translateByDouble(-focal.dx, -focal.dy, 0, 0);
-
+                  
+                  // Create transformation matrix for scaling around focal point
+                  // This is: T(-focal) * S(scale) * T(focal)
+                  final scaleTransform = Matrix4.identity()
+                    ..translate(-focal.dx, -focal.dy, 0)
+                    ..scale(scaleFactor)
+                    ..translate(focal.dx, focal.dy, 0);
+                  
+                  // Apply translation first by updating matrix storage
+                  final newMatrix = Matrix4.copy(_matrix);
+                  newMatrix.storage[12] = newX;
+                  newMatrix.storage[13] = newY;
+                  newMatrix.storage[14] = newZ;
+                  
+                  // Then apply scaling around focal point
+                  // Multiply: scaleTransform * newMatrix
+                  _matrix = scaleTransform * newMatrix;
                   _lastFocalPoint = details.focalPoint;
                   _saveCurrentData();
                 });
@@ -1213,25 +1405,20 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 return;
               }
               
-              // For touch, check for single-finger panning (only if not in text mode and no stroke active)
-              if (isTouch && _pointerCount == 1 && !_textMode && _currentStroke == null) {
-                // Single-finger touch panning
-                print('[onPointerDown] Starting touch panning');
-                setState(() {
-                  _isPanning = true;
-                  _panStartPosition = event.localPosition;
-                  _lastPanPosition = event.localPosition; // Initialize last position
-                });
-                return;
-              }
-              
               // Don't start drawing if we're panning
               if (_isPanning) {
                 print('[onPointerDown] Skipping drawing because panning is active');
                 return;
               }
               
-              if (isStylus || (isMouse && !_textMode)) {
+              // Don't start drawing if two fingers are down (two-finger panning/zooming)
+              if (_pointerCount >= 2) {
+                print('[onPointerDown] Skipping drawing because two fingers are active');
+                return;
+              }
+              
+              // Allow touch drawing on Android - only pan with two fingers or long press
+              if (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode)) {
                 // Double-check we're not panning (buttons might not have been set on down)
                 if (isMouse && event.buttons == 2) {
                   print('[onPointerDown] Right-click detected during drawing check, starting panning instead');
@@ -1260,8 +1447,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _saveCurrentData();
                   }
                 });
-              } else if (isMouse && _textMode) {
-                // Click to place text cursor or edit existing text
+              } else if ((isMouse || isTouch) && _textMode) {
+                // Click/tap to place text cursor or edit existing text
                 final local = _transformToLocal(event.localPosition);
                 
                 // Check if clicking on an existing text element
@@ -1277,9 +1464,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                 }
                 
+                print('[onPointerDown] Creating text element at: $local');
                 setState(() {
                   if (clickedTextIndex != null) {
                     // Edit existing text element
+                    print('[onPointerDown] Editing existing text element at index: $clickedTextIndex');
                     _editingTextElementIndex = clickedTextIndex;
                     _activeTextElement = TextElement(
                       _textElements[clickedTextIndex].position,
@@ -1288,20 +1477,51 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     _textController.text = _textElements[clickedTextIndex].text;
                   } else {
                     // Create new text element
+                    print('[onPointerDown] Creating new text element');
                     _editingTextElementIndex = null;
                     _activeTextElement = TextElement(local, '');
                     _textController.clear();
                   }
-                  // Request focus after a small delay to ensure the widget is built
-                  Future.delayed(const Duration(milliseconds: 50), () {
-                    if (mounted) {
+                  // Track when text element was created to prevent immediate dismissal
+                  _textElementCreatedAt = DateTime.now();
+                  _textElementHasBeenFocused = false; // Reset focus tracking
+                  print('[onPointerDown] _textElementCreatedAt: $_textElementCreatedAt, _textElementHasBeenFocused: $_textElementHasBeenFocused');
+                });
+                
+                // Request focus using post-frame callback to ensure widget is built and stable
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  // Use a small delay to ensure the TextField widget is fully built
+                  Future.delayed(const Duration(milliseconds: 100), () {
+                    print('[FocusRequest] Post-frame focus request - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}');
+                    if (mounted && _activeTextElement != null) {
+                      print('[FocusRequest] Requesting focus...');
                       _textFocusNode.requestFocus();
+                      print('[FocusRequest] Focus requested, hasFocus: ${_textFocusNode.hasFocus}');
+                      // Mark as focused after a short delay to ensure focus is actually set
+                      Future.delayed(const Duration(milliseconds: 150), () {
+                        print('[FocusCheck] Checking focus after delay - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}, hasFocus: ${_textFocusNode.hasFocus}');
+                        if (mounted && _activeTextElement != null && _textFocusNode.hasFocus) {
+                          print('[FocusCheck] Setting _textElementHasBeenFocused = true');
+                          setState(() {
+                            _textElementHasBeenFocused = true;
+                          });
+                        } else {
+                          print('[FocusCheck] Focus not set - _activeTextElement: ${_activeTextElement != null}, hasFocus: ${_textFocusNode.hasFocus}');
+                          // Retry focus request if it failed
+                          if (mounted && _activeTextElement != null && !_textFocusNode.hasFocus) {
+                            print('[FocusCheck] Retrying focus request...');
+                            _textFocusNode.requestFocus();
+                          }
+                        }
+                      });
                       // Move cursor to end of text when editing
                       if (_editingTextElementIndex != null) {
                         _textController.selection = TextSelection.fromPosition(
                           TextPosition(offset: _textController.text.length),
                         );
                       }
+                    } else {
+                      print('[FocusRequest] Cannot request focus - mounted: $mounted, _activeTextElement: ${_activeTextElement != null}');
                     }
                   });
                 });
@@ -1339,7 +1559,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 // Don't return - continue to panning handling below so first move is processed
               }
               
-              // Handle panning (single finger touch or right-click mouse)
+              // Lock canvas position when text box is active
+              if (_activeTextElement != null && _isPanning) {
+                // Cancel panning if text box is active
+                setState(() {
+                  _isPanning = false;
+                  _panStartPosition = null;
+                  _lastPanPosition = null;
+                });
+                return;
+              }
+              
+              // Handle panning (right-click mouse or two-finger touch via GestureDetector)
               // Use the same approach as two-finger panning: calculate delta from previous position
               if (_isPanning && _lastPanPosition != null) {
                 // Calculate delta from the previous position (like two-finger panning does)
@@ -1396,7 +1627,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 return;
               }
               
-              if (_currentStroke != null && (isStylus || (isMouse && !_textMode))) {
+              if (_currentStroke != null && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
                 final local = _transformToLocal(event.localPosition);
                 final pressure = isStylus ? event.pressure : 0.5;
                 // Add point and immediately trigger repaint for real-time drawing
@@ -1443,7 +1674,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           ),
         ),
         Positioned(
-          top: 16,
+          top: MediaQuery.of(context).padding.top + 16,
           right: 16,
           child: Column(
             children: [
@@ -1490,10 +1721,13 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   onPressed: () => setState(() {
                     _textMode = !_textMode;
                     if (!_textMode) {
+                      print('[TextModeToggle] Switching to draw mode - clearing text element');
                       _textFocusNode.unfocus();
                       _activeTextElement = null;
                       _editingTextElementIndex = null;
                       _textController.clear();
+                      _textElementCreatedAt = null;
+                      _textElementHasBeenFocused = false;
                     }
                   }),
                 ),
@@ -1504,7 +1738,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 borderRadius: BorderRadius.circular(8),
                 color: Colors.grey[700],
                 child: IconButton(
-                  icon: Icon(Icons.palette),
+                  icon: const Icon(Icons.palette),
                   tooltip: 'Color Picker',
                   onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
                 ),
@@ -1515,7 +1749,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         // Color picker overlay
         if (_showColorPicker)
           Positioned(
-            top: 16,
+            top: MediaQuery.of(context).padding.top + 16,
             right: 80,
             child: Material(
               elevation: 8,
@@ -1554,184 +1788,238 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             ),
           ),
         // Text input overlay - placed last so it's on top
+        // Only show dismiss handler after a delay to prevent immediate dismissal when creating text box
+        // IMPORTANT: This must be AFTER the text box widget so taps on the text box are handled first
         if (_activeTextElement != null)
           Positioned.fill(
-            child: GestureDetector(
+            child: IgnorePointer(
+              ignoring: false,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
                 onTap: () {
-                  // Click outside to dismiss
-                  setState(() {
-                    if (_textController.text.isNotEmpty && _activeTextElement != null) {
-                      _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                      if (_editingTextElementIndex != null) {
-                        // Update existing text element
-                        _textElements[_editingTextElementIndex!] = TextElement(
-                          _activeTextElement!.position,
-                          _textController.text,
-                        );
-                      } else {
-                        // Add new text element
-                        _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
-                      }
-                      _redoStack.clear();
-                      _saveCurrentData();
+                  print('[DismissHandler] onTap called');
+                  print('[DismissHandler] _activeTextElement: ${_activeTextElement != null}');
+                  print('[DismissHandler] _textElementCreatedAt: $_textElementCreatedAt');
+                  print('[DismissHandler] _textElementHasBeenFocused: $_textElementHasBeenFocused');
+                  print('[DismissHandler] _textFocusNode.hasFocus: ${_textFocusNode.hasFocus}');
+                  
+                  // Prevent dismissal if text element was just created (within last 1500ms to be safe)
+                  final now = DateTime.now();
+                  if (_textElementCreatedAt != null) {
+                    final timeSinceCreation = now.difference(_textElementCreatedAt!).inMilliseconds;
+                    print('[DismissHandler] Time since creation: ${timeSinceCreation}ms');
+                    if (timeSinceCreation < 1500) {
+                      print('[DismissHandler] Blocking dismissal - text element just created');
+                      return; // Don't dismiss if just created
                     }
-                    _activeTextElement = null;
-                    _editingTextElementIndex = null;
-                    _textController.clear();
-                    _textFocusNode.unfocus();
-                  });
+                  }
+                  
+                  // Only dismiss if:
+                  // 1. The text element has been focused at least once (to avoid dismissing before focus is set)
+                  // 2. Focus is not currently active (user clicked outside after focusing)
+                  print('[DismissHandler] Checking dismiss conditions...');
+                  if (_textElementHasBeenFocused && !_textFocusNode.hasFocus) {
+                    print('[DismissHandler] Dismissing text element');
+                    setState(() {
+                      if (_textController.text.isNotEmpty && _activeTextElement != null) {
+                        _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+                        if (_editingTextElementIndex != null) {
+                          // Update existing text element
+                          _textElements[_editingTextElementIndex!] = TextElement(
+                            _activeTextElement!.position,
+                            _textController.text,
+                          );
+                        } else {
+                          // Add new text element
+                          _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
+                        }
+                        _redoStack.clear();
+                        _saveCurrentData();
+                      }
+                      print('[DismissHandler] Clearing text element');
+                      _activeTextElement = null;
+                      _editingTextElementIndex = null;
+                      _textController.clear();
+                      _textElementCreatedAt = null;
+                      _textElementHasBeenFocused = false;
+                      _textFocusNode.unfocus();
+                    });
+                  } else {
+                    print('[DismissHandler] Not dismissing - _textElementHasBeenFocused: $_textElementHasBeenFocused, hasFocus: ${_textFocusNode.hasFocus}');
+                  }
                 },
-              child: Container(color: Colors.transparent),
+                child: Container(color: Colors.transparent),
+              ),
             ),
           ),
         if (_activeTextElement != null)
-          Positioned(
-            left: _transformToScreen(_activeTextElement!.position).dx.clamp(0.0, double.infinity),
-            top: _transformToScreen(_activeTextElement!.position).dy.clamp(0.0, double.infinity),
-            child: GestureDetector(
-              onTap: () {}, // Prevent tap from propagating
-              child: Builder(
-                builder: (context) {
-                  final brightness = Theme.of(context).brightness;
-                  final isDark = brightness == Brightness.dark;
-                  return Material(
-                    elevation: 4,
-                    borderRadius: BorderRadius.circular(4),
-                    color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-                    child: Container(
-                      constraints: const BoxConstraints(minWidth: 200, maxWidth: 400),
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
-                        border: Border.all(
-                          color: isDark ? Colors.blue.shade300 : Colors.blue,
-                          width: 2,
-                        ),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      child: Shortcuts(
-                        shortcuts: {
-                          // Enter key submits (without Shift)
-                          const SingleActivator(LogicalKeyboardKey.enter): const _SubmitTextIntent(),
-                        },
-                        child: Actions(
-                          actions: {
-                            _SubmitTextIntent: CallbackAction<_SubmitTextIntent>(
-                              onInvoke: (intent) {
-                                setState(() {
-                                  final value = _textController.text;
-                                  if (value.isNotEmpty && _activeTextElement != null) {
-                                    _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                                    if (_editingTextElementIndex != null) {
-                                      // Update existing text element
-                                      _textElements[_editingTextElementIndex!] = TextElement(
-                                        _activeTextElement!.position,
-                                        value,
-                                      );
-                                    } else {
-                                      // Add new text element
-                                      _textElements.add(TextElement(_activeTextElement!.position, value));
-                                    }
-                                    _redoStack.clear();
-                                    _saveCurrentData();
-                                  }
-                                  _activeTextElement = null;
-                                  _editingTextElementIndex = null;
-                                  _textController.clear();
-                                  _textFocusNode.unfocus();
-                                });
-                                return null;
-                              },
-                            ),
-                          },
-                          child: TextField(
-                            controller: _textController,
-                            focusNode: _textFocusNode,
-                            autofocus: true,
-                            keyboardType: TextInputType.multiline,
-                            textInputAction: TextInputAction.newline,
-                            maxLines: null,
-                            minLines: 1,
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: isDark ? Colors.white : Colors.black,
-                            ),
-                            decoration: InputDecoration(
-                              border: InputBorder.none,
-                              hintText: 'Type here... (Shift+Enter for new line)',
-                              hintStyle: TextStyle(
-                                color: isDark ? Colors.white70 : Colors.black54,
-                              ),
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                            ),
-                            onChanged: (value) {
-                              setState(() {
-                                if (_activeTextElement != null) {
-                                  _activeTextElement = TextElement(_activeTextElement!.position, value);
-                                }
-                              });
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
+          Positioned.fill(
+            child: Center(
+              child: GestureDetector(
+                onTap: () {
+                  // Prevent tap from propagating to dismiss handler
+                  print('[TextBox] onTap - preventing propagation');
                 },
+                behavior: HitTestBehavior.opaque,
+                child: Builder(
+                  builder: (context) {
+                    final brightness = Theme.of(context).brightness;
+                    final isDark = brightness == Brightness.dark;
+                    return Material(
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(4),
+                      color: Theme.of(context).colorScheme.surface,
+                      child: Container(
+                        constraints: const BoxConstraints(minWidth: 200, maxWidth: 400),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surface,
+                          border: Border.all(
+                            color: Colors.grey[700]!,
+                            width: 2,
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Shortcuts(
+                              shortcuts: {
+                                // Enter key submits (without Shift)
+                                const SingleActivator(LogicalKeyboardKey.enter): const _SubmitTextIntent(),
+                              },
+                              child: Actions(
+                                actions: {
+                                  _SubmitTextIntent: CallbackAction<_SubmitTextIntent>(
+                                    onInvoke: (intent) {
+                                      _submitText();
+                                      return null;
+                                    },
+                                  ),
+                                },
+                                child: TextField(
+                                  controller: _textController,
+                                  focusNode: _textFocusNode,
+                                  autofocus: true,
+                                  keyboardType: TextInputType.multiline,
+                                  textInputAction: TextInputAction.newline,
+                                  maxLines: null,
+                                  minLines: 1,
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Theme.of(context).colorScheme.onSurface,
+                              ),
+                              decoration: InputDecoration(
+                                border: InputBorder.none,
+                                hintText: 'Type here... (Shift+Enter for new line)',
+                                hintStyle: TextStyle(
+                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                                ),
+                                    isDense: true,
+                                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                                  ),
+                                  onChanged: (value) {
+                                    setState(() {
+                                      if (_activeTextElement != null) {
+                                        _activeTextElement = TextElement(_activeTextElement!.position, value);
+                                      }
+                                    });
+                                  },
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            // Save button
+                            ElevatedButton(
+                              onPressed: _submitText,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.grey[700]!,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                              ),
+                              child: const Text('Save'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
           ),
         // Minimap
         if (_showMinimap)
-          Positioned(
-            bottom: 16,
-            right: 16,
-            child: _MinimapWidget(
-              strokes: _strokes,
-              textElements: _textElements,
-              contentBounds: _calculateContentBounds(),
-              viewportBounds: _calculateViewportBounds(MediaQuery.of(context).size),
-              isDark: isDark,
-              onTap: (localPoint) {
-                // Pan to the clicked location on the minimap
-                final contentBounds = _calculateContentBounds();
-                final minimapSize = const Size(200, 200);
-                final scaleX = minimapSize.width / contentBounds.width;
-                final scaleY = minimapSize.height / contentBounds.height;
-                final scale = scaleX < scaleY ? scaleX : scaleY;
-                
-                // Calculate offset to center content in minimap
-                final offsetX = -contentBounds.left * scale;
-                final offsetY = -contentBounds.top * scale;
-                
-                // Convert minimap click position to canvas coordinates
-                final canvasX = (localPoint.dx - offsetX) / scale;
-                final canvasY = (localPoint.dy - offsetY) / scale;
-                final canvasPoint = Offset(canvasX, canvasY);
-                
-                // Center the viewport on this canvas point
-                final screenSize = MediaQuery.of(context).size;
-                final targetTranslation = vm.Vector3(
-                  screenSize.width / 2 - canvasPoint.dx,
-                  screenSize.height / 2 - canvasPoint.dy,
-                  0,
-                );
-                
-                setState(() {
-                  final currentTranslation = _matrix.getTranslation();
-                  final newX = targetTranslation.x;
-                  final newY = targetTranslation.y;
-                  final newZ = currentTranslation.z;
-                  
-                  final newMatrix = Matrix4.copy(_matrix);
-                  newMatrix.storage[12] = newX;
-                  newMatrix.storage[13] = newY;
-                  newMatrix.storage[14] = newZ;
-                  _matrix = newMatrix;
-                  _saveCurrentData();
-                });
-              },
-            ),
+          Builder(
+            builder: (context) {
+              final screenSize = MediaQuery.of(context).size;
+              final padding = MediaQuery.of(context).padding;
+              // Calculate minimap size based on screen size
+              // Use 20% of screen width/height, but cap at reasonable min/max sizes
+              // Also ensure it doesn't overlap with buttons (right side has buttons at ~80px from right)
+              final maxWidth = screenSize.width * 0.25;
+              final maxHeight = screenSize.height * 0.25;
+              // Ensure we leave space for buttons on the right (at least 100px)
+              final availableWidth = screenSize.width - 100;
+              final availableHeight = screenSize.height - padding.bottom - 32; // 16px bottom + 16px margin
+              final minimapWidth = (maxWidth < availableWidth ? maxWidth : availableWidth).clamp(120.0, 300.0);
+              final minimapHeight = (maxHeight < availableHeight ? maxHeight : availableHeight).clamp(120.0, 300.0);
+              final minimapSize = Size(minimapWidth, minimapHeight);
+              
+              return Positioned(
+                bottom: padding.bottom + 16,
+                right: 16,
+                child: _MinimapWidget(
+                  size: minimapSize,
+                  strokes: _strokes,
+                  textElements: _textElements,
+                  contentBounds: _calculateContentBounds(),
+                  viewportBounds: _calculateViewportBounds(screenSize),
+                  isDark: isDark,
+                  onTap: (localPoint) {
+                    // Pan to the clicked location on the minimap
+                    final contentBounds = _calculateContentBounds();
+                    final scaleX = minimapSize.width / contentBounds.width;
+                    final scaleY = minimapSize.height / contentBounds.height;
+                    final scale = scaleX < scaleY ? scaleX : scaleY;
+                    
+                    // Calculate offset to center content in minimap
+                    final offsetX = -contentBounds.left * scale;
+                    final offsetY = -contentBounds.top * scale;
+                    
+                    // Convert minimap click position to canvas coordinates
+                    final canvasX = (localPoint.dx - offsetX) / scale;
+                    final canvasY = (localPoint.dy - offsetY) / scale;
+                    final canvasPoint = Offset(canvasX, canvasY);
+                    
+                    // Center the viewport on this canvas point
+                    final targetTranslation = vm.Vector3(
+                      screenSize.width / 2 - canvasPoint.dx,
+                      screenSize.height / 2 - canvasPoint.dy,
+                      0,
+                    );
+                    
+                    setState(() {
+                      final currentTranslation = _matrix.getTranslation();
+                      final newX = targetTranslation.x;
+                      final newY = targetTranslation.y;
+                      final newZ = currentTranslation.z;
+                      
+                      final newMatrix = Matrix4.copy(_matrix);
+                      newMatrix.storage[12] = newX;
+                      newMatrix.storage[13] = newY;
+                      newMatrix.storage[14] = newZ;
+                      _matrix = newMatrix;
+                      _saveCurrentData();
+                    });
+                  },
+                ),
+              );
+            },
           ),
       ],
     );
@@ -2169,6 +2457,7 @@ class _CanvasPainter extends CustomPainter {
 }
 
 class _MinimapWidget extends StatelessWidget {
+  final Size size;
   final List<Stroke> strokes;
   final List<TextElement> textElements;
   final Rect contentBounds;
@@ -2177,6 +2466,7 @@ class _MinimapWidget extends StatelessWidget {
   final Function(Offset) onTap;
   
   const _MinimapWidget({
+    required this.size,
     required this.strokes,
     required this.textElements,
     required this.contentBounds,
@@ -2187,9 +2477,8 @@ class _MinimapWidget extends StatelessWidget {
   
   @override
   Widget build(BuildContext context) {
-    const minimapSize = Size(200, 200);
-    final scaleX = minimapSize.width / contentBounds.width;
-    final scaleY = minimapSize.height / contentBounds.height;
+    final scaleX = size.width / contentBounds.width;
+    final scaleY = size.height / contentBounds.height;
     final scale = scaleX < scaleY ? scaleX : scaleY;
     
     return GestureDetector(
@@ -2199,8 +2488,8 @@ class _MinimapWidget extends StatelessWidget {
         onTap(localPoint);
       },
       child: Container(
-        width: minimapSize.width,
-        height: minimapSize.height,
+        width: size.width,
+        height: size.height,
         decoration: BoxDecoration(
           color: isDark ? const Color(0xFF1E1E1E) : Colors.grey.shade200,
           border: Border.all(
@@ -2220,7 +2509,7 @@ class _MinimapWidget extends StatelessWidget {
               scale: scale,
               isDark: isDark,
             ),
-            size: minimapSize,
+            size: size,
           ),
         ),
       ),
@@ -2776,3 +3065,4 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 }
+

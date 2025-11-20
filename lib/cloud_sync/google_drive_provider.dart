@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:http/http.dart' as http;
-import 'package:path/path.dart' as path;
 import 'sync_provider.dart';
 
 /// Google Drive sync provider using Google Drive API
@@ -15,9 +14,10 @@ class GoogleDriveProvider implements SyncProvider {
     'https://www.googleapis.com/auth/drive.file', // Access to files created by the app
   ];
 
-  GoogleSignIn? _googleSignIn;
+  GoogleSignInAccount? _currentAccount;
   drive.DriveApi? _driveApi;
   String? _folderId;
+  bool _initialized = false;
 
   @override
   String get name => 'Google Drive';
@@ -25,16 +25,26 @@ class GoogleDriveProvider implements SyncProvider {
   @override
   String get id => _providerId;
 
+  /// Initialize GoogleSignIn if not already initialized
+  Future<void> _ensureInitialized({String? clientId}) async {
+    if (!_initialized) {
+      await GoogleSignIn.instance.initialize(
+        clientId: clientId,
+      );
+      _initialized = true;
+    }
+  }
+
   @override
   Future<bool> isConfigured() async {
-    if (_googleSignIn == null) {
-      _googleSignIn = GoogleSignIn(
-        scopes: _scopes,
-      );
+    try {
+      await _ensureInitialized();
+      final account = await GoogleSignIn.instance.attemptLightweightAuthentication();
+      _currentAccount = account;
+      return account != null;
+    } catch (e) {
+      return false;
     }
-    
-    final account = await _googleSignIn!.signInSilently();
-    return account != null;
   }
 
   @override
@@ -43,19 +53,23 @@ class GoogleDriveProvider implements SyncProvider {
     // The config can contain clientId for custom OAuth setup if needed
     final clientId = config['clientId']?.toString();
     
-    _googleSignIn = GoogleSignIn(
-      scopes: _scopes,
-      clientId: clientId, // Optional: for custom OAuth client
+    // Initialize GoogleSignIn
+    await _ensureInitialized(clientId: clientId);
+    
+    // Try lightweight authentication first
+    GoogleSignInAccount? account = await GoogleSignIn.instance.attemptLightweightAuthentication();
+    
+    // If that fails, do full authentication
+    account ??= await GoogleSignIn.instance.authenticate();
+    
+    _currentAccount = account;
+    
+    // Get authentication headers with authorization for the required scopes
+    final authHeaders = await account.authorizationClient.authorizationHeaders(
+      _scopes,
+      promptIfNecessary: true,
     );
     
-    // Sign in (or use existing session)
-    final account = await _googleSignIn!.signIn();
-    if (account == null) {
-      throw Exception('Google sign-in cancelled or failed');
-    }
-    
-    // Get authentication headers
-    final authHeaders = await _googleSignIn!.currentUser?.authHeaders;
     if (authHeaders == null) {
       throw Exception('Failed to get authentication headers');
     }
@@ -74,10 +88,9 @@ class GoogleDriveProvider implements SyncProvider {
       return null;
     }
     
-    final account = await _googleSignIn!.signInSilently();
     return {
-      'email': account?.email,
-      'isSignedIn': account != null,
+      'email': _currentAccount?.email,
+      'isSignedIn': _currentAccount != null,
     };
   }
 
@@ -102,10 +115,12 @@ class GoogleDriveProvider implements SyncProvider {
     required String title,
     required Map<String, dynamic> noteData,
   }) async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       throw Exception('Google Drive provider not configured');
     }
 
+    // Refresh auth headers to ensure they're valid
+    await _refreshAuthHeaders();
     await _ensureFolder();
 
     final fileName = 'note_$noteId.json';
@@ -150,9 +165,12 @@ class GoogleDriveProvider implements SyncProvider {
 
   @override
   Future<Map<String, dynamic>?> downloadNote(String remotePath) async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       throw Exception('Google Drive provider not configured');
     }
+
+    // Refresh auth headers to ensure they're valid
+    await _refreshAuthHeaders();
 
     // remotePath is the file ID in Google Drive
     try {
@@ -179,10 +197,12 @@ class GoogleDriveProvider implements SyncProvider {
 
   @override
   Future<Map<String, Map<String, dynamic>>> listNotes() async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       throw Exception('Google Drive provider not configured');
     }
 
+    // Refresh auth headers to ensure they're valid
+    await _refreshAuthHeaders();
     await _ensureFolder();
 
     final notes = <String, Map<String, dynamic>>{};
@@ -212,9 +232,12 @@ class GoogleDriveProvider implements SyncProvider {
 
   @override
   Future<void> deleteNote(String remotePath) async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       throw Exception('Google Drive provider not configured');
     }
+
+    // Refresh auth headers to ensure they're valid
+    await _refreshAuthHeaders();
 
     try {
       await _driveApi!.files.delete(remotePath);
@@ -228,9 +251,12 @@ class GoogleDriveProvider implements SyncProvider {
 
   @override
   Future<DateTime?> getLastModified(String remotePath) async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       throw Exception('Google Drive provider not configured');
     }
+
+    // Refresh auth headers to ensure they're valid
+    await _refreshAuthHeaders();
 
     try {
       final file = await _driveApi!.files.get(remotePath) as drive.File;
@@ -247,11 +273,13 @@ class GoogleDriveProvider implements SyncProvider {
     required Function(int noteId, Map<String, dynamic> noteData) onNoteUpdated,
     required Function(Map<String, dynamic> noteData) onNoteCreated,
   }) async {
-    if (_driveApi == null) {
+    if (_driveApi == null || _currentAccount == null) {
       return SyncResult(error: 'Google Drive provider not configured');
     }
 
     try {
+      // Refresh auth headers to ensure they're valid
+      await _refreshAuthHeaders();
       await _ensureFolder();
 
       // List remote notes
@@ -359,12 +387,32 @@ class GoogleDriveProvider implements SyncProvider {
     }
   }
 
+  /// Refresh authentication headers and update the Drive API client
+  Future<void> _refreshAuthHeaders() async {
+    if (_currentAccount == null) {
+      throw Exception('No account available');
+    }
+    
+    final authHeaders = await _currentAccount!.authorizationClient.authorizationHeaders(
+      _scopes,
+      promptIfNecessary: true,
+    );
+    
+    if (authHeaders == null) {
+      throw Exception('Failed to refresh authentication headers');
+    }
+    
+    final client = GoogleAuthClient(authHeaders);
+    _driveApi = drive.DriveApi(client);
+  }
+
   @override
   Future<void> disconnect() async {
-    await _googleSignIn?.signOut();
-    _googleSignIn = null;
+    await GoogleSignIn.instance.signOut();
+    _currentAccount = null;
     _driveApi = null;
     _folderId = null;
+    _initialized = false;
   }
 
   /// Ensure the feather_notes folder exists in Google Drive

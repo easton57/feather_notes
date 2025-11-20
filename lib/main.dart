@@ -934,6 +934,12 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   // Minimap state
   bool _showMinimap = true;
   
+  // Text font size
+  double _textFontSize = 16.0;
+  
+  // Collapsible menu state
+  bool _showToolMenu = false;
+  
   @override
   void initState() {
     super.initState();
@@ -1158,7 +1164,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     
     for (final textElement in _textElements) {
       if (textElement.text.isEmpty) continue;
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: _textFontSize);
       textPainter.layout();
       
       final textWidth = textPainter.width;
@@ -1329,6 +1335,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   _strokes, // Pass direct reference so changes are immediately visible
                   _textElements,
                   isDark,
+                  _textFontSize,
                 ),
                 child: SizedBox(width: 20000, height: 20000),
               ),
@@ -1417,7 +1424,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 final isDark = brightness == Brightness.dark;
                 final textColor = isDark ? Colors.white : Colors.black;
                 for (int i = _textElements.length - 1; i >= 0; i--) {
-                  if (_textElements[i].hitTest(local, textColor: textColor)) {
+                  if (_textElements[i].hitTest(local, fontSize: _textFontSize, textColor: textColor)) {
                     clickedTextIndex = i;
                     break;
                   }
@@ -1610,75 +1617,92 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             behavior: HitTestBehavior.opaque,
           ),
         ),
+        // Collapsible tool menu
         Positioned(
           top: MediaQuery.of(context).padding.top + 16,
           right: 16,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
+              // Menu toggle button
               Material(
                 elevation: 4,
                 borderRadius: BorderRadius.circular(8),
                 color: Colors.grey[700],
                 child: IconButton(
-                  icon: const Icon(Icons.undo),
-                  tooltip: 'Undo',
-                  onPressed: undo,
+                  icon: Icon(_showToolMenu ? Icons.close : Icons.menu),
+                  tooltip: _showToolMenu ? 'Close Menu' : 'Open Menu',
+                  onPressed: () => setState(() => _showToolMenu = !_showToolMenu),
                 ),
               ),
-              const SizedBox(height: 8),
-              Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[700],
-                child: IconButton(
-                  icon: const Icon(Icons.redo),
-                  tooltip: 'Redo',
-                  onPressed: redo,
+              // Collapsible menu items
+              if (_showToolMenu) ...[
+                const SizedBox(height: 8),
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.undo),
+                    tooltip: 'Undo',
+                    onPressed: undo,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[700],
-                child: IconButton(
-                  icon: Icon(_eraserMode ? Icons.brush : Icons.cleaning_services),
-                  tooltip: 'Eraser',
-                  onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                const SizedBox(height: 8),
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.redo),
+                    tooltip: 'Redo',
+                    onPressed: redo,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[700],
-                child: IconButton(
-                  icon: Icon(_textMode ? Icons.brush : Icons.text_fields),
-                  tooltip: _textMode ? 'Drawing Mode' : 'Text Mode',
-                  onPressed: () => setState(() {
-                    _textMode = !_textMode;
-                    if (!_textMode) {
-                      _textFocusNode.unfocus();
-                      _activeTextElement = null;
-                      _editingTextElementIndex = null;
-                      _textController.clear();
-                      _textElementCreatedAt = null;
-                      _textElementHasBeenFocused = false;
-                    }
-                  }),
+                const SizedBox(height: 8),
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: Icon(_eraserMode ? Icons.brush : Icons.cleaning_services),
+                    tooltip: 'Eraser',
+                    onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Material(
-                elevation: 4,
-                borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[700],
-                child: IconButton(
-                  icon: const Icon(Icons.palette),
-                  tooltip: 'Color Picker',
-                  onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+                const SizedBox(height: 8),
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: Icon(_textMode ? Icons.brush : Icons.text_fields),
+                    tooltip: _textMode ? 'Drawing Mode' : 'Text Mode',
+                    onPressed: () => setState(() {
+                      _textMode = !_textMode;
+                      if (!_textMode) {
+                        _textFocusNode.unfocus();
+                        _activeTextElement = null;
+                        _editingTextElementIndex = null;
+                        _textController.clear();
+                        _textElementCreatedAt = null;
+                        _textElementHasBeenFocused = false;
+                      }
+                    }),
+                  ),
                 ),
-              ),
+                const SizedBox(height: 8),
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.palette),
+                    tooltip: 'Color Picker',
+                    onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1715,6 +1739,77 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         TextButton(
                           onPressed: () => setState(() => _showColorPicker = false),
                           child: const Text('Done'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        // Font size adjuster (shown when in text mode and menu is open)
+        if (_textMode && _showToolMenu)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 16,
+            right: 80,
+            child: Material(
+              elevation: 8,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.grey.shade300),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Font Size: ${_textFontSize.toInt()}',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Slider(
+                      value: _textFontSize,
+                      min: 8.0,
+                      max: 48.0,
+                      divisions: 40,
+                      label: _textFontSize.toInt().toString(),
+                      onChanged: (value) {
+                        setState(() {
+                          _textFontSize = value;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.remove),
+                          onPressed: () {
+                            setState(() {
+                              _textFontSize = (_textFontSize - 1).clamp(8.0, 48.0);
+                            });
+                          },
+                        ),
+                        SizedBox(
+                          width: 60,
+                          child: Text(
+                            '${_textFontSize.toInt()}',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyMedium,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add),
+                          onPressed: () {
+                            setState(() {
+                              _textFontSize = (_textFontSize + 1).clamp(8.0, 48.0);
+                            });
+                          },
                         ),
                       ],
                     ),
@@ -1831,7 +1926,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                   maxLines: null,
                                   minLines: 1,
                               style: TextStyle(
-                                fontSize: 16,
+                                fontSize: _textFontSize,
                                 color: Theme.of(context).colorScheme.onSurface,
                               ),
                               decoration: InputDecoration(
@@ -2084,7 +2179,7 @@ class TextElement {
   TextElement(this.position, this.text);
 
   /// Check if a point is within the bounds of this text element
-  bool hitTest(Offset point, {double fontSize = 16.0, Color textColor = Colors.black}) {
+  bool hitTest(Offset point, {required double fontSize, Color textColor = Colors.black}) {
     // Create a TextPainter to measure the text bounds (using markdown rendering for accurate size)
     final textPainter = TextPainter(
       text: _markdownToTextSpan(text, textColor, baseFontSize: fontSize),
@@ -2252,8 +2347,9 @@ class _CanvasPainter extends CustomPainter {
   final List<Stroke> strokes;
   final List<TextElement> textElements;
   final bool isDark;
+  final double fontSize;
   
-  _CanvasPainter(this.strokes, this.textElements, this.isDark);
+  _CanvasPainter(this.strokes, this.textElements, this.isDark, this.fontSize);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2342,7 +2438,7 @@ class _CanvasPainter extends CustomPainter {
     for (final textElement in textElements) {
       if (textElement.text.isEmpty) continue;
       // Convert markdown to styled TextSpan
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: fontSize);
       textPainter.layout();
       textPainter.paint(canvas, textElement.position);
     }
@@ -2432,6 +2528,7 @@ class _MinimapWidget extends StatelessWidget {
               viewportBounds: viewportBounds,
               scale: scale,
               isDark: isDark,
+              fontSize: 16.0, // Minimap uses fixed smaller font size
             ),
             size: size,
           ),
@@ -2448,6 +2545,7 @@ class _MinimapPainter extends CustomPainter {
   final Rect viewportBounds;
   final double scale;
   final bool isDark;
+  final double fontSize;
   
   _MinimapPainter({
     required this.strokes,
@@ -2456,6 +2554,7 @@ class _MinimapPainter extends CustomPainter {
     required this.viewportBounds,
     required this.scale,
     required this.isDark,
+    required this.fontSize,
   });
   
   @override
@@ -2501,7 +2600,7 @@ class _MinimapPainter extends CustomPainter {
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
     for (final textElement in textElements) {
       if (textElement.text.isEmpty) continue;
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: 16);
+      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: fontSize);
       textPainter.layout();
       
       final textRect = Rect.fromLTWH(

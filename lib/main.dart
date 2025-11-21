@@ -1257,28 +1257,63 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     return Stack(
       children: [
         Listener(
-          onPointerDown: (e) => setState(() => _pointerCount++),
-          onPointerUp: (e) => setState(() => _pointerCount = (_pointerCount - 1).clamp(0, 10)),
+          onPointerDown: (e) {
+            setState(() => _pointerCount++);
+            // Don't interfere - just track pointer count for multi-touch detection
+          },
+          onPointerUp: (e) {
+            setState(() => _pointerCount = (_pointerCount - 1).clamp(0, 10));
+            // Don't interfere - just track pointer count for multi-touch detection
+          },
           onPointerSignal: (event) {
             // Lock canvas position when text box is active
             if (_activeTextElement != null) {
               return; // Don't allow scrolling while text box is active
             }
             
-            // Handle mouse wheel scrolling
-            // Check if it's a scroll event by checking the kind
+            // Handle mouse wheel scrolling for zoom
             if (event.kind == ui.PointerDeviceKind.mouse) {
-              // Try to access scrollDelta if available
+              // Try to access scrollDelta property (available on scroll events)
               try {
-                final scrollDelta = (event as dynamic).scrollDelta as Offset?;
+                // Use dynamic access since scrollDelta might not be in the type definition
+                // but is available at runtime for scroll events
+                final scrollDelta = (event as dynamic).scrollDelta;
+                
                 if (scrollDelta != null) {
-                  setState(() {
-                    _matrix = _matrix..translateByDouble(-scrollDelta.dx, -scrollDelta.dy, 0, 0);
-                    _saveCurrentData();
-                  });
+                  final delta = scrollDelta as Offset;
+                  
+                  if (delta.dy.abs() > 0.1) { // Only zoom if there's significant vertical scroll
+                    setState(() {
+                      // Use vertical scroll for zoom
+                      // Negative dy means scroll up (zoom in), positive dy means scroll down (zoom out)
+                      // Scale factor based on scroll amount for smoother zooming
+                      final scrollAmount = delta.dy.abs();
+                      final baseZoomFactor = scrollAmount > 10 ? 1.15 : 1.1; // Faster zoom for larger scrolls
+                      final zoomFactor = delta.dy < 0 ? baseZoomFactor : 1.0 / baseZoomFactor;
+                      
+                      // Get the focal point (mouse position) in screen coordinates
+                      final focalPoint = event.localPosition;
+                      
+                      // Transform focal point to canvas coordinates
+                      final focal = _transformToLocal(focalPoint);
+                      
+                      // Create transformation matrix for scaling around focal point
+                      // This is: T(-focal) * S(scale) * T(focal)
+                      final scaleTransform = Matrix4.identity()
+                        ..translate(-focal.dx, -focal.dy, 0)
+                        ..scale(zoomFactor)
+                        ..translate(focal.dx, focal.dy, 0);
+                      
+                      // Apply scaling transformation
+                      _matrix = scaleTransform * _matrix;
+                      
+                      _saveCurrentData();
+                    });
+                  }
                 }
               } catch (e) {
-                // If scrollDelta is not available, ignore
+                // If scrollDelta is not available on this platform, ignore
+                // This can happen on some platforms or Flutter versions
               }
             }
           },
@@ -1294,6 +1329,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 return; // Don't allow panning/zooming while text box is active
               }
               
+              // Handle both single-finger panning (when scale is 1.0) and two-finger pinch zoom
               if (details.pointerCount >= 2) {
                 setState(() {
                   // Handle panning (translation)
@@ -1303,36 +1339,58 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   // Handle zooming (scaling)
                   final newScale = details.scale;
                   final scaleFactor = newScale / _scale;
+                  
+                  // Only apply scaling if scale actually changed (avoid unnecessary updates)
+                  if (scaleFactor != 1.0) {
+                    // Get the focal point in screen coordinates (where the user is pinching)
+                    final focalScreen = details.focalPoint;
+                    
+                    // Transform focal point to canvas coordinates using current matrix
+                    final focalCanvas = _transformToLocal(focalScreen);
+                    
+                    // To scale around the focal point while keeping it fixed in screen space:
+                    // We want the canvas point at focalCanvas to map to the same screen position
+                    // after scaling. The formula is:
+                    // newMatrix = T(focalScreen) * S(scaleFactor) * T(-focalScreen) * oldMatrix
+                    // But since we're applying to the matrix that goes from canvas to screen,
+                    // we need to work in canvas space:
+                    // newMatrix = oldMatrix * T(-focalCanvas) * S(1/scaleFactor) * T(focalCanvas)
+                    // Wait, that's backwards. Let me think...
+                    //
+                    // Actually, the matrix transforms canvas -> screen
+                    // To scale around a screen point, we need:
+                    // newMatrix = T(focalScreen) * S(scaleFactor) * T(-focalScreen) * oldMatrix
+                    // But we want to apply it as: newMatrix = scaleTransform * oldMatrix
+                    // So: scaleTransform = T(focalScreen) * S(scaleFactor) * T(-focalScreen)
+                    //
+                    // However, since we're working in canvas space for the matrix,
+                    // we need to transform the focal point to canvas space first
+                    final scaleTransform = Matrix4.identity()
+                      ..translate(focalScreen.dx, focalScreen.dy, 0)
+                      ..scale(scaleFactor)
+                      ..translate(-focalScreen.dx, -focalScreen.dy, 0);
+                    
+                    // Apply: newMatrix = scaleTransform * oldMatrix
+                    _matrix = scaleTransform * _matrix;
+                  }
+                  
+                  // Apply translation (panning)
+                  if (dx != 0 || dy != 0) {
+                    final currentTranslation = _matrix.getTranslation();
+                    final newX = currentTranslation.x + dx;
+                    final newY = currentTranslation.y + dy;
+                    final newZ = currentTranslation.z;
+                    
+                    // Update translation in matrix
+                    final newMatrix = Matrix4.copy(_matrix);
+                    newMatrix.storage[12] = newX;
+                    newMatrix.storage[13] = newY;
+                    newMatrix.storage[14] = newZ;
+                    _matrix = newMatrix;
+                  }
+                  
+                  // Update state
                   _scale = newScale;
-                  
-                  // Get current matrix values
-                  final currentTranslation = _matrix.getTranslation();
-                  
-                  // Apply translation first (accumulate)
-                  final newX = currentTranslation.x + dx;
-                  final newY = currentTranslation.y + dy;
-                  final newZ = currentTranslation.z;
-                  
-                  // Apply scaling around focal point
-                  // First, transform focal point to local coordinates
-                  final focal = _transformToLocal(details.focalPoint);
-                  
-                  // Create transformation matrix for scaling around focal point
-                  // This is: T(-focal) * S(scale) * T(focal)
-                  final scaleTransform = Matrix4.identity()
-                    ..translate(-focal.dx, -focal.dy, 0)
-                    ..scale(scaleFactor)
-                    ..translate(focal.dx, focal.dy, 0);
-                  
-                  // Apply translation first by updating matrix storage
-                  final newMatrix = Matrix4.copy(_matrix);
-                  newMatrix.storage[12] = newX;
-                  newMatrix.storage[13] = newY;
-                  newMatrix.storage[14] = newZ;
-                  
-                  // Then apply scaling around focal point
-                  // Multiply: scaleTransform * newMatrix
-                  _matrix = scaleTransform * newMatrix;
                   _lastFocalPoint = details.focalPoint;
                   _saveCurrentData();
                 });
@@ -1340,31 +1398,60 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             },
             onScaleEnd: (_) => _scale = 1.0,
             child: Transform(
-              key: ValueKey('transform_${_matrix.getTranslation()}'),
-              transform: _matrix,
-              child: CustomPaint(
-                // Key includes note ID and current stroke point count to force repaint during drawing
-                key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}'),
-                painter: _CanvasPainter(
-                  _strokes, // Pass direct reference so changes are immediately visible
-                  _textElements,
-                  isDark,
-                  _textFontSize,
+                key: ValueKey('transform_${_matrix.getTranslation()}'),
+                transform: _matrix,
+                child: CustomPaint(
+                  // Key includes note ID and current stroke point count to force repaint during drawing
+                  key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}'),
+                  painter: _CanvasPainter(
+                    _strokes, // Pass direct reference so changes are immediately visible
+                    _textElements,
+                    isDark,
+                    _textFontSize,
+                  ),
+                  child: SizedBox(width: 20000, height: 20000),
                 ),
-                child: SizedBox(width: 20000, height: 20000),
               ),
             ),
           ),
-        ),
         Positioned.fill(
-          child: Listener(
-            onPointerDown: (event) {
+          child: IgnorePointer(
+            ignoring: _pointerCount >= 2, // Ignore when multi-touch to let GestureDetector handle it
+            child: Listener(
+              onPointerDown: (event) {
+                // CRITICAL: Don't interfere with multi-touch gestures - let GestureDetector handle them
+                // Check pointer count FIRST before doing anything else
+                if (_pointerCount >= 2) {
+                  // Cancel any stroke that might have been started by the first touch
+                  if (_currentStroke != null) {
+                    setState(() {
+                      if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+                        _strokes.removeLast();
+                      }
+                      _currentStroke = null;
+                    });
+                  }
+                  return; // Let GestureDetector handle pinch zoom and two-finger pan
+                }
+              
               // Don't intercept if text field is active
               if (_activeTextElement != null) return;
               
               final isStylus = event.kind == ui.PointerDeviceKind.stylus || event.kind == ui.PointerDeviceKind.invertedStylus;
               final isMouse = event.kind == ui.PointerDeviceKind.mouse;
               final isTouch = event.kind == ui.PointerDeviceKind.touch;
+              
+              // If this is a touch event and there's already a current stroke, this might be the start of multi-touch
+              // Cancel the stroke to prevent dots from appearing
+              if (isTouch && _currentStroke != null && _pointerCount == 1) {
+                setState(() {
+                  if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+                    _strokes.removeLast();
+                  }
+                  _currentStroke = null;
+                });
+                return; // Let GestureDetector handle multi-touch
+              }
               
               
               // Check for right-click panning FIRST (before drawing)
@@ -1390,11 +1477,6 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               
               // Don't start drawing if we're panning
               if (_isPanning) {
-                return;
-              }
-              
-              // Don't start drawing if two fingers are down (two-finger panning/zooming)
-              if (_pointerCount >= 2) {
                 return;
               }
               
@@ -1496,6 +1578,12 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               }
             },
             onPointerMove: (event) {
+              // CRITICAL: Don't interfere with multi-touch gestures - let GestureDetector handle them
+              // Check pointer count FIRST before doing anything else
+              if (_pointerCount >= 2) {
+                return; // Let GestureDetector handle pinch zoom and two-finger pan
+              }
+              
               // Don't intercept if text field is active
               if (_activeTextElement != null) return;
               
@@ -1628,7 +1716,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 });
               }
             },
-            behavior: HitTestBehavior.opaque,
+            behavior: HitTestBehavior.translucent, // Allow events to pass through to GestureDetector below
+            ),
           ),
         ),
         // Collapsible tool menu

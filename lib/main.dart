@@ -638,6 +638,19 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
     
     if (confirmed == true) {
+      // Delete from cloud sync if configured
+      if (_syncManager.currentProvider != null && 
+          await _syncManager.currentProvider!.isConfigured()) {
+        try {
+          final remotePath = '/feather_notes/folders/folder_$folderId.json';
+          await _syncManager.currentProvider!.deleteFolder(remotePath);
+          print('Deleted folder $folderId from cloud sync');
+        } catch (e) {
+          // Log error but don't fail the deletion
+          print('Error deleting folder from cloud: $e');
+        }
+      }
+      
       await DatabaseHelper.instance.deleteFolder(folderId);
       _loadNotes();
       
@@ -3581,6 +3594,33 @@ class _SettingsPageState extends State<SettingsPage> {
           'tags': tags,
         };
         localNotesForSync.add(exportedNote);
+      }
+
+      // Prepare local folders for sync
+      final allFolders = await DatabaseHelper.instance.getAllFolders();
+      
+      // Perform folder sync first (so folders exist when notes are synced)
+      if (_syncManager.currentProvider != null && 
+          await _syncManager.currentProvider!.isConfigured()) {
+        try {
+          await _syncManager.currentProvider!.syncFolders(
+            localFolders: allFolders,
+            onFolderUpdated: (folderId, folderData) async {
+              // Update existing folder
+              final name = folderData['name'] as String?;
+              if (name != null) {
+                await DatabaseHelper.instance.updateFolderName(folderId, name);
+              }
+            },
+            onFolderCreated: (folderData) async {
+              // Create new folder from remote
+              await DatabaseHelper.instance.importFolder(folderData);
+            },
+          );
+        } catch (e) {
+          print('Error syncing folders: $e');
+          // Continue with note sync even if folder sync fails
+        }
       }
 
       // Perform sync

@@ -735,6 +735,371 @@ class NextcloudProvider implements SyncProvider {
     _appPassword = null;
   }
 
+  // Folder sync methods
+  @override
+  Future<String> uploadFolder({
+    required int folderId,
+    required String name,
+    required Map<String, dynamic> folderData,
+  }) async {
+    if (!await isConfigured()) {
+      throw Exception('Nextcloud provider not configured');
+    }
+
+    final fileName = 'folder_$folderId.json';
+    final remotePath = '$_basePath/folders/$fileName';
+    final url = Uri.parse(
+      '$_serverUrl/remote.php/dav/files/$_username$remotePath',
+    );
+
+    final jsonData = jsonEncode(folderData);
+    final response = await http.put(
+      url,
+      headers: {
+        ..._getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonData,
+    );
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return remotePath;
+    } else {
+      throw Exception('Failed to upload folder: ${response.statusCode} ${response.reasonPhrase}');
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>?> downloadFolder(String remotePath) async {
+    if (!await isConfigured()) {
+      throw Exception('Nextcloud provider not configured');
+    }
+
+    final normalizedPath = remotePath.startsWith('/') ? remotePath : '/$remotePath';
+    final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$normalizedPath');
+    
+    final response = await http.get(
+      url,
+      headers: _getAuthHeaders(),
+    );
+
+    if (response.statusCode == 200) {
+      if (response.body.isEmpty) {
+        return null;
+      }
+      try {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (e) {
+        throw Exception('Failed to parse folder data: $e');
+      }
+    } else if (response.statusCode == 404) {
+      return null;
+    } else {
+      throw Exception('Failed to download folder: ${response.statusCode} ${response.reasonPhrase}');
+    }
+  }
+
+  @override
+  Future<Map<String, Map<String, dynamic>>> listFolders() async {
+    if (!await isConfigured()) {
+      throw Exception('Nextcloud provider not configured');
+    }
+
+    final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$_basePath/folders/');
+    
+    // Try PROPFIND with explicit properties first
+    http.Request request = http.Request('PROPFIND', url);
+    request.headers.addAll(_getAuthHeaders());
+    request.headers['Depth'] = '1';
+    
+    request.body = '''<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:getlastmodified/>
+    <d:getcontentlength/>
+    <d:resourcetype/>
+  </d:prop>
+</d:propfind>''';
+    request.headers['Content-Type'] = 'application/xml; charset=utf-8';
+    
+    final client = http.Client();
+    http.Response response;
+    try {
+      final streamedResponse = await client.send(request);
+      response = await http.Response.fromStream(streamedResponse);
+    } finally {
+      client.close();
+    }
+
+    // If the first attempt fails, try without request body
+    if (response.statusCode != 207 && response.statusCode != 200) {
+      final fallbackRequest = http.Request('PROPFIND', url);
+      fallbackRequest.headers.addAll(_getAuthHeaders());
+      fallbackRequest.headers['Depth'] = '1';
+      
+      final fallbackClient = http.Client();
+      try {
+        final fallbackStreamedResponse = await fallbackClient.send(fallbackRequest);
+        response = await http.Response.fromStream(fallbackStreamedResponse);
+      } finally {
+        fallbackClient.close();
+      }
+    }
+
+    if (response.statusCode != 207 && response.statusCode != 200) {
+      if (response.statusCode == 404) {
+        return {};
+      }
+      throw Exception('Failed to list folders: ${response.statusCode} ${response.reasonPhrase}');
+    }
+
+    final folders = <String, Map<String, dynamic>>{};
+    
+    try {
+      final document = xml.XmlDocument.parse(response.body);
+      final davNamespace = 'DAV:';
+      final allResponses = document.findAllElements('response', namespace: davNamespace).toList();
+      final responseElements = allResponses.isNotEmpty 
+          ? allResponses 
+          : document.findAllElements('response').toList();
+      
+      for (final responseElement in responseElements) {
+        String? href;
+        final hrefElements = responseElement.findAllElements('href', namespace: davNamespace);
+        if (hrefElements.isNotEmpty) {
+          href = hrefElements.first.text;
+        } else {
+          final hrefNoNs = responseElement.findAllElements('href');
+          if (hrefNoNs.isNotEmpty) {
+            href = hrefNoNs.first.text;
+          }
+        }
+        
+        if (href == null || href.isEmpty || href.endsWith('/')) {
+          continue;
+        }
+        
+        href = Uri.decodeComponent(href);
+        
+        String filePath = href;
+        if (href.startsWith('http://') || href.startsWith('https://')) {
+          final uri = Uri.parse(href);
+          filePath = uri.path;
+        }
+        
+        if (!filePath.contains('folder_') || !filePath.endsWith('.json')) {
+          continue;
+        }
+        
+        String remotePath;
+        final basePathPattern = '$_basePath/folders/';
+        final basePathIndex = filePath.indexOf(basePathPattern);
+        
+        if (basePathIndex != -1) {
+          remotePath = filePath.substring(basePathIndex);
+          if (!remotePath.startsWith('/')) {
+            remotePath = '/$remotePath';
+          }
+        } else {
+          final fileName = filePath.split('/').last;
+          if (fileName.startsWith('folder_') && fileName.endsWith('.json')) {
+            remotePath = '$_basePath/folders/$fileName';
+            if (!remotePath.startsWith('/')) {
+              remotePath = '/$remotePath';
+            }
+          } else {
+            continue;
+          }
+        }
+        
+        DateTime? lastModified;
+        final propstatElements = responseElement.findAllElements('propstat', namespace: davNamespace);
+        if (propstatElements.isEmpty) {
+          final propstatNoNs = responseElement.findAllElements('propstat');
+          if (propstatNoNs.isNotEmpty) {
+            final propstat = propstatNoNs.first;
+            final prop = propstat.findAllElements('prop').firstOrNull;
+            if (prop != null) {
+              final lastMod = prop.findAllElements('getlastmodified').firstOrNull;
+              if (lastMod != null) {
+                try {
+                  lastModified = DateTime.parse(lastMod.text).toLocal();
+                } catch (e) {
+                  // Ignore
+                }
+              }
+            }
+          }
+        } else {
+          for (final propstat in propstatElements) {
+            final status = propstat.findAllElements('status', namespace: davNamespace).firstOrNull;
+            if (status != null && !status.text.contains('200')) {
+              continue;
+            }
+            
+            final prop = propstat.findAllElements('prop', namespace: davNamespace).firstOrNull;
+            if (prop != null) {
+              final lastMod = prop.findAllElements('getlastmodified', namespace: davNamespace).firstOrNull;
+              if (lastMod != null) {
+                try {
+                  lastModified = DateTime.parse(lastMod.text).toLocal();
+                } catch (e) {
+                  // Ignore
+                }
+              }
+              break;
+            }
+          }
+        }
+        
+        folders[remotePath] = {
+          'path': remotePath,
+          'lastModified': lastModified,
+        };
+      }
+    } catch (e) {
+      print('Error parsing folders XML: $e');
+      return {};
+    }
+
+    return folders;
+  }
+
+  @override
+  Future<void> deleteFolder(String remotePath) async {
+    if (!await isConfigured()) {
+      throw Exception('Nextcloud provider not configured');
+    }
+
+    final normalizedPath = remotePath.startsWith('/') ? remotePath : '/$remotePath';
+    final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$normalizedPath');
+    final response = await http.delete(
+      url,
+      headers: _getAuthHeaders(),
+    );
+
+    if (response.statusCode != 200 && response.statusCode != 204 && response.statusCode != 404) {
+      throw Exception('Failed to delete folder: ${response.statusCode} ${response.reasonPhrase}');
+    }
+  }
+
+  @override
+  Future<void> syncFolders({
+    required List<Map<String, dynamic>> localFolders,
+    required Function(int folderId, Map<String, dynamic> folderData) onFolderUpdated,
+    required Function(Map<String, dynamic> folderData) onFolderCreated,
+  }) async {
+    if (!await isConfigured()) {
+      throw Exception('Nextcloud provider not configured');
+    }
+
+    try {
+      // Ensure folders directory exists
+      final foldersUrl = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$_basePath/folders/');
+      final mkcolRequest = http.Request('MKCOL', foldersUrl);
+      mkcolRequest.headers.addAll(_getAuthHeaders());
+      
+      final client = http.Client();
+      try {
+        final streamedResponse = await client.send(mkcolRequest);
+        final response = await http.Response.fromStream(streamedResponse);
+        // 201 = created, 405 = already exists, both are fine
+      } finally {
+        client.close();
+      }
+
+      // List remote folders
+      final remoteFolders = await listFolders();
+      
+      // Create a map of local folders by ID
+      final localFoldersMap = <int, Map<String, dynamic>>{};
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        if (folderId != null) {
+          localFoldersMap[folderId] = folder;
+        }
+      }
+
+      // Upload local folders
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        final name = folder['name'] as String?;
+        if (folderId == null || name == null) continue;
+
+        final remotePath = '$_basePath/folders/folder_$folderId.json';
+        
+        if (remoteFolders.containsKey(remotePath)) {
+          final remoteModified = remoteFolders[remotePath]!['lastModified'] as DateTime?;
+          final localModified = folder['created_at'] as int?;
+          if (localModified != null && remoteModified != null) {
+            final localModifiedDate = DateTime.fromMillisecondsSinceEpoch(localModified, isUtc: true).toLocal();
+            if (remoteModified.isAfter(localModifiedDate)) {
+              // Remote is newer, skip upload
+              continue;
+            }
+          }
+        }
+
+        try {
+          await uploadFolder(
+            folderId: folderId,
+            name: name,
+            folderData: folder,
+          );
+        } catch (e) {
+          print('Error uploading folder $folderId: $e');
+        }
+      }
+
+      // Download remote folders
+      for (final entry in remoteFolders.entries) {
+        final remotePath = entry.key;
+        final fileName = path.basename(remotePath);
+        
+        final match = RegExp(r'folder_(\d+)\.json').firstMatch(fileName);
+        if (match == null) continue;
+        
+        final remoteFolderId = int.tryParse(match.group(1)!);
+        if (remoteFolderId == null) continue;
+
+        if (localFoldersMap.containsKey(remoteFolderId)) {
+          // Folder exists locally, check if we need to update
+          final localFolder = localFoldersMap[remoteFolderId]!;
+          final remoteModified = entry.value['lastModified'] as DateTime?;
+          final localModified = localFolder['created_at'] as int?;
+          
+          if (localModified != null && remoteModified != null) {
+            final localModifiedDate = DateTime.fromMillisecondsSinceEpoch(localModified, isUtc: true).toLocal();
+            if (remoteModified.isAfter(localModifiedDate)) {
+              // Remote is newer, download it
+              try {
+                final remoteData = await downloadFolder(remotePath);
+                if (remoteData != null) {
+                  await onFolderUpdated(remoteFolderId, remoteData);
+                }
+              } catch (e) {
+                print('Error downloading folder $remoteFolderId: $e');
+              }
+            }
+          }
+        } else {
+          // New remote folder, download it
+          try {
+            final remoteData = await downloadFolder(remotePath);
+            if (remoteData != null) {
+              await onFolderCreated(remoteData);
+            }
+          } catch (e) {
+            print('Error downloading new folder $remoteFolderId: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Error syncing folders: $e');
+      rethrow;
+    }
+  }
+
   /// Parse a DateTime from various formats (timestamp int, ISO string, etc.)
   DateTime? _parseDateTime(dynamic value) {
     if (value == null) return null;

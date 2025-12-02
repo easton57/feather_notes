@@ -301,17 +301,26 @@ class DatabaseHelper {
   
   Future<void> wipeDatabase() async {
     final db = await database;
-    final batch = db.batch();
     
-    // Delete all data from all tables
-    batch.delete('note_tags');
-    batch.delete('strokes');
-    batch.delete('text_elements');
-    batch.delete('canvas_state');
-    batch.delete('notes');
-    batch.delete('folders'); // Also delete folders
+    // Disable foreign key constraints temporarily to allow deletion
+    await db.execute('PRAGMA foreign_keys = OFF');
     
-    await batch.commit(noResult: true);
+    try {
+      final batch = db.batch();
+      
+      // Delete all data from all tables
+      batch.delete('note_tags');
+      batch.delete('strokes');
+      batch.delete('text_elements');
+      batch.delete('canvas_state');
+      batch.delete('notes');
+      batch.delete('folders'); // Delete folders as well
+      
+      await batch.commit(noResult: true);
+    } finally {
+      // Re-enable foreign key constraints
+      await db.execute('PRAGMA foreign_keys = ON');
+    }
     
     // Reset the database connection to ensure clean state
     await db.close();
@@ -551,6 +560,7 @@ class DatabaseHelper {
         'title': note['title'],
         'created_at': note['created_at'],
         'modified_at': note['modified_at'],
+        'folder_id': note['folder_id'], // Include folder_id for sync
       },
       'canvas': {
         'strokes': canvasData.strokes.map((s) => _strokeToJson(s)).toList(),
@@ -703,6 +713,67 @@ class DatabaseHelper {
     final notes = exportData['notes'] as List<dynamic>;
     for (final noteData in notes) {
       await importNote(noteData as Map<String, dynamic>);
+    }
+  }
+
+  // Folder export/import functions
+  Future<Map<String, dynamic>> exportAllFolders() async {
+    final folders = await getAllFolders();
+    return {
+      'version': '1.0',
+      'export_date': DateTime.now().millisecondsSinceEpoch,
+      'folders': folders,
+    };
+  }
+
+  Future<int> importFolder(Map<String, dynamic> folderData) async {
+    final folderIdValue = folderData['id'];
+    final name = folderData['name'] as String?;
+    final createdAt = folderData['created_at'] as int?;
+    final sortOrder = folderData['sort_order'] as int?;
+    
+    if (name == null) {
+      throw Exception('Folder missing name field');
+    }
+    
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    
+    int? folderId;
+    if (folderIdValue != null) {
+      folderId = folderIdValue is int ? folderIdValue : int.tryParse(folderIdValue.toString());
+    }
+    
+    if (folderId != null) {
+      // Insert with specific ID
+      folderId = await db.insert(
+        'folders',
+        {
+          'id': folderId,
+          'name': name,
+          'created_at': createdAt ?? now,
+          'sort_order': sortOrder ?? 0,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } else {
+      // Auto-increment ID
+      folderId = await db.insert('folders', {
+        'name': name,
+        'created_at': createdAt ?? now,
+        'sort_order': sortOrder ?? 0,
+      });
+    }
+    
+    return folderId;
+  }
+
+  Future<void> importAllFolders(Map<String, dynamic> exportData) async {
+    final folders = exportData['folders'] as List<dynamic>?;
+    if (folders != null) {
+      for (final folderData in folders) {
+        await importFolder(folderData as Map<String, dynamic>);
+      }
     }
   }
 

@@ -407,6 +407,237 @@ class GoogleDriveProvider implements SyncProvider {
   }
 
   @override
+  Future<String> uploadFolder({
+    required int folderId,
+    required String name,
+    required Map<String, dynamic> folderData,
+  }) async {
+    if (_driveApi == null || _currentAccount == null) {
+      throw Exception('Google Drive provider not configured');
+    }
+
+    await _refreshAuthHeaders();
+    await _ensureFolder();
+
+    final fileName = 'folder_$folderId.json';
+    final fileContent = utf8.encode(jsonEncode(folderData));
+
+    final existingFile = await _findFile(fileName);
+    
+    if (existingFile != null) {
+      final media = drive.Media(
+        Stream.value(fileContent),
+        fileContent.length,
+      );
+      
+      await _driveApi!.files.update(
+        drive.File()..name = fileName,
+        existingFile.id!,
+        uploadMedia: media,
+      );
+      
+      return existingFile.id!;
+    } else {
+      final file = drive.File()
+        ..name = fileName
+        ..parents = [_folderId!];
+      
+      final media = drive.Media(
+        Stream.value(fileContent),
+        fileContent.length,
+      );
+      
+      final createdFile = await _driveApi!.files.create(
+        file,
+        uploadMedia: media,
+      );
+      
+      return createdFile.id!;
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>?> downloadFolder(String remotePath) async {
+    if (_driveApi == null || _currentAccount == null) {
+      throw Exception('Google Drive provider not configured');
+    }
+
+    await _refreshAuthHeaders();
+    
+    // remotePath is a file ID for Google Drive
+    try {
+      final file = await _driveApi!.files.get(
+        remotePath,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+      
+      final response = await file.stream.toList();
+      final bytes = response.expand((chunk) => chunk).toList();
+      final content = utf8.decode(bytes);
+      
+      return jsonDecode(content) as Map<String, dynamic>;
+    } catch (e) {
+      if (e.toString().contains('404')) {
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  @override
+  Future<Map<String, Map<String, dynamic>>> listFolders() async {
+    if (_driveApi == null || _currentAccount == null) {
+      throw Exception('Google Drive provider not configured');
+    }
+
+    await _refreshAuthHeaders();
+    await _ensureFolder();
+
+    final folders = <String, Map<String, dynamic>>{};
+    
+    final response = await _driveApi!.files.list(
+      q: "'$_folderId' in parents and name contains 'folder_' and name ends with '.json' and trashed=false",
+    );
+
+    if (response.files != null) {
+      for (final file in response.files!) {
+        if (file.name != null && file.id != null) {
+          folders[file.id!] = {
+            'name': file.name,
+            'id': file.id,
+            'modifiedTime': file.modifiedTime?.toIso8601String(),
+          };
+        }
+      }
+    }
+
+    return folders;
+  }
+
+  @override
+  Future<void> deleteFolder(String remotePath) async {
+    if (_driveApi == null || _currentAccount == null) {
+      throw Exception('Google Drive provider not configured');
+    }
+
+    await _refreshAuthHeaders();
+    
+    try {
+      await _driveApi!.files.delete(remotePath);
+    } catch (e) {
+      if (!e.toString().contains('404')) {
+        rethrow;
+      }
+    }
+  }
+
+  @override
+  Future<void> syncFolders({
+    required List<Map<String, dynamic>> localFolders,
+    required Function(int folderId, Map<String, dynamic> folderData) onFolderUpdated,
+    required Function(Map<String, dynamic> folderData) onFolderCreated,
+  }) async {
+    if (_driveApi == null || _currentAccount == null) {
+      throw Exception('Google Drive provider not configured');
+    }
+
+    try {
+      await _refreshAuthHeaders();
+      await _ensureFolder();
+
+      final remoteFolders = await listFolders();
+      final localFoldersMap = <int, Map<String, dynamic>>{};
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        if (folderId != null) {
+          localFoldersMap[folderId] = folder;
+        }
+      }
+
+      // Create a map of remote folders by folder ID (extracted from filename)
+      final remoteFoldersByFolderId = <int, Map<String, dynamic>>{};
+      for (final entry in remoteFolders.entries) {
+        final fileName = entry.value['name'] as String?;
+        if (fileName != null && fileName.startsWith('folder_') && fileName.endsWith('.json')) {
+          final folderIdStr = fileName.substring(7, fileName.length - 5);
+          final folderId = int.tryParse(folderIdStr);
+          if (folderId != null) {
+            remoteFoldersByFolderId[folderId] = {
+              ...entry.value,
+              'fileId': entry.key,
+            };
+          }
+        }
+      }
+
+      // Upload local folders
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        final name = folder['name'] as String?;
+        if (folderId == null || name == null) continue;
+
+        try {
+          await uploadFolder(
+            folderId: folderId,
+            name: name,
+            folderData: folder,
+          );
+        } catch (e) {
+          print('Error uploading folder $folderId: $e');
+        }
+      }
+
+      // Download remote folders
+      for (final entry in remoteFoldersByFolderId.entries) {
+        final remoteFolderId = entry.key;
+        final fileId = entry.value['fileId'] as String?;
+        
+        if (fileId == null) continue;
+
+        if (localFoldersMap.containsKey(remoteFolderId)) {
+          // Folder exists locally, check if we need to update
+          final localFolder = localFoldersMap[remoteFolderId]!;
+          final remoteModified = entry.value['modifiedTime'] as String?;
+          final localModified = localFolder['created_at'] as int?;
+          
+          if (localModified != null && remoteModified != null) {
+            try {
+              final remoteModifiedDate = DateTime.parse(remoteModified);
+              final localModifiedDate = DateTime.fromMillisecondsSinceEpoch(localModified, isUtc: true).toLocal();
+              if (remoteModifiedDate.isAfter(localModifiedDate)) {
+                // Remote is newer, download it
+                try {
+                  final remoteData = await downloadFolder(fileId);
+                  if (remoteData != null) {
+                    await onFolderUpdated(remoteFolderId, remoteData);
+                  }
+                } catch (e) {
+                  print('Error downloading folder $remoteFolderId: $e');
+                }
+              }
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+        } else {
+          // New remote folder, download it
+          try {
+            final remoteData = await downloadFolder(fileId);
+            if (remoteData != null) {
+              await onFolderCreated(remoteData);
+            }
+          } catch (e) {
+            print('Error downloading new folder $remoteFolderId: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Error syncing folders: $e');
+      rethrow;
+    }
+  }
+
+  @override
   Future<void> disconnect() async {
     await GoogleSignIn.instance.signOut();
     _currentAccount = null;

@@ -47,6 +47,32 @@ abstract class SyncProvider {
     required Function(Map<String, dynamic> noteData) onNoteCreated,
   });
 
+  /// Upload a folder to the cloud
+  /// Returns the remote path/ID of the uploaded folder
+  Future<String> uploadFolder({
+    required int folderId,
+    required String name,
+    required Map<String, dynamic> folderData,
+  });
+
+  /// Download a folder from the cloud
+  /// Returns the folder data
+  Future<Map<String, dynamic>?> downloadFolder(String remotePath);
+
+  /// List all folders in the cloud
+  /// Returns a map of remote paths to folder metadata
+  Future<Map<String, Map<String, dynamic>>> listFolders();
+
+  /// Delete a folder from the cloud
+  Future<void> deleteFolder(String remotePath);
+
+  /// Sync all folders (upload local changes, download remote changes)
+  Future<void> syncFolders({
+    required List<Map<String, dynamic>> localFolders,
+    required Function(int folderId, Map<String, dynamic> folderData) onFolderUpdated,
+    required Function(Map<String, dynamic> folderData) onFolderCreated,
+  });
+
   /// Disconnect/clear configuration
   Future<void> disconnect();
 }

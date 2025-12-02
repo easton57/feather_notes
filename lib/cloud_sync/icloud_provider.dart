@@ -387,6 +387,232 @@ class ICloudProvider implements SyncProvider {
   }
 
   @override
+  Future<String> uploadFolder({
+    required int folderId,
+    required String name,
+    required Map<String, dynamic> folderData,
+  }) async {
+    if (!await isConfigured()) {
+      throw Exception('iCloud provider not configured');
+    }
+
+    final fileName = 'folder_$folderId.json';
+    final remotePath = '$_basePath/folders/$fileName';
+    final url = Uri.parse('$_webdavBase$remotePath');
+
+    final jsonData = jsonEncode(folderData);
+    final response = await http.put(
+      url,
+      headers: {
+        ..._getAuthHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: jsonData,
+    );
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      return remotePath;
+    } else {
+      throw Exception('Failed to upload folder: ${response.statusCode} ${response.reasonPhrase}');
+    }
+  }
+
+  @override
+  Future<Map<String, dynamic>?> downloadFolder(String remotePath) async {
+    if (!await isConfigured()) {
+      throw Exception('iCloud provider not configured');
+    }
+
+    final url = Uri.parse('$_webdavBase$remotePath');
+    final response = await http.get(
+      url,
+      headers: _getAuthHeaders(),
+    );
+
+    if (response.statusCode == 200) {
+      try {
+        return jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (e) {
+        throw Exception('Failed to parse folder data: $e');
+      }
+    } else if (response.statusCode == 404) {
+      return null;
+    } else {
+      throw Exception('Failed to download folder: ${response.statusCode} ${response.reasonPhrase}');
+    }
+  }
+
+  @override
+  Future<Map<String, Map<String, dynamic>>> listFolders() async {
+    // Similar to listNotes but for folders
+    if (!await isConfigured()) {
+      throw Exception('iCloud provider not configured');
+    }
+
+    final url = Uri.parse('$_webdavBase$_basePath/folders/');
+    final request = http.Request('PROPFIND', url);
+    request.headers.addAll(_getAuthHeaders());
+    request.headers['Depth'] = '1';
+
+    final client = http.Client();
+    try {
+      final streamedResponse = await client.send(request);
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode != 207) {
+        if (response.statusCode == 404) {
+          return {};
+        }
+        throw Exception('Failed to list folders: ${response.statusCode} ${response.reasonPhrase}');
+      }
+
+      final folders = <String, Map<String, dynamic>>{};
+      final document = xml.XmlDocument.parse(response.body);
+
+      for (final responseElement in document.findAllElements('response')) {
+        final href = responseElement.findElements('href').firstOrNull?.text;
+        if (href == null || href == '$_basePath/folders/' || !href.endsWith('.json')) {
+          continue;
+        }
+
+        String remotePath = href;
+        if (remotePath.startsWith('/')) {
+          remotePath = remotePath.substring(1);
+        }
+        if (!remotePath.startsWith(_basePath.substring(1) + '/folders/')) {
+          continue;
+        }
+
+        final propstat = responseElement.findElements('propstat').firstOrNull;
+        final prop = propstat?.findElements('prop').firstOrNull;
+        final getlastmodified = prop?.findElements('getlastmodified').firstOrNull?.text;
+
+        DateTime? modified;
+        if (getlastmodified != null) {
+          try {
+            modified = DateTime.parse(getlastmodified);
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+
+        folders[remotePath] = {
+          'remotePath': remotePath,
+          'modified_at': modified?.toIso8601String() ?? DateTime.now().toIso8601String(),
+        };
+      }
+
+      return folders;
+    } finally {
+      client.close();
+    }
+  }
+
+  @override
+  Future<void> deleteFolder(String remotePath) async {
+    if (!await isConfigured()) {
+      throw Exception('iCloud provider not configured');
+    }
+
+    final url = Uri.parse('$_webdavBase$remotePath');
+    final request = http.Request('DELETE', url);
+    request.headers.addAll(_getAuthHeaders());
+
+    final client = http.Client();
+    try {
+      final streamedResponse = await client.send(request);
+      final response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode != 200 && response.statusCode != 204 && response.statusCode != 404) {
+        throw Exception('Delete failed: ${response.statusCode} ${response.reasonPhrase}');
+      }
+    } finally {
+      client.close();
+    }
+  }
+
+  @override
+  Future<void> syncFolders({
+    required List<Map<String, dynamic>> localFolders,
+    required Function(int folderId, Map<String, dynamic> folderData) onFolderUpdated,
+    required Function(Map<String, dynamic> folderData) onFolderCreated,
+  }) async {
+    if (!await isConfigured()) {
+      throw Exception('iCloud provider not configured');
+    }
+
+    try {
+      await _ensureBaseDirectory();
+      final foldersUrl = Uri.parse('$_webdavBase$_basePath/folders/');
+      final mkcolRequest = http.Request('MKCOL', foldersUrl);
+      mkcolRequest.headers.addAll(_getAuthHeaders());
+      
+      final client = http.Client();
+      try {
+        await client.send(mkcolRequest);
+      } finally {
+        client.close();
+      }
+
+      final remoteFolders = await listFolders();
+      final localFoldersMap = <int, Map<String, dynamic>>{};
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        if (folderId != null) {
+          localFoldersMap[folderId] = folder;
+        }
+      }
+
+      // Upload local folders
+      for (final folder in localFolders) {
+        final folderId = folder['id'] as int?;
+        final name = folder['name'] as String?;
+        if (folderId == null || name == null) continue;
+
+        final remotePath = '$_basePath/folders/folder_$folderId.json';
+        
+        if (!remoteFolders.containsKey(remotePath)) {
+          try {
+            await uploadFolder(
+              folderId: folderId,
+              name: name,
+              folderData: folder,
+            );
+          } catch (e) {
+            print('Error uploading folder $folderId: $e');
+          }
+        }
+      }
+
+      // Download remote folders
+      for (final entry in remoteFolders.entries) {
+        final remotePath = entry.key;
+        final fileName = path.basename(remotePath);
+        
+        final match = RegExp(r'folder_(\d+)\.json').firstMatch(fileName);
+        if (match == null) continue;
+        
+        final remoteFolderId = int.tryParse(match.group(1)!);
+        if (remoteFolderId == null) continue;
+
+        if (!localFoldersMap.containsKey(remoteFolderId)) {
+          try {
+            final remoteData = await downloadFolder(remotePath);
+            if (remoteData != null) {
+              await onFolderCreated(remoteData);
+            }
+          } catch (e) {
+            print('Error downloading new folder $remoteFolderId: $e');
+          }
+        }
+      }
+    } catch (e) {
+      print('Error syncing folders: $e');
+      rethrow;
+    }
+  }
+
+  @override
   Future<void> disconnect() async {
     _appleId = null;
     _appSpecificPassword = null;

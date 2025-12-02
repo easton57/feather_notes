@@ -141,11 +141,15 @@ class _NotesHomePageState extends State<NotesHomePage> {
   
   // Scaffold key for drawer control
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+  
+  // Sync manager for cloud sync operations
+  final SyncManager _syncManager = SyncManager();
 
   @override
   void initState() {
     super.initState();
     _loadNotes();
+    _syncManager.initialize();
   }
 
   Future<void> _loadNotes() async {
@@ -989,6 +993,19 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
     if (confirmed == true) {
       try {
+        // Delete from cloud sync if configured
+        if (_syncManager.currentProvider != null && 
+            await _syncManager.currentProvider!.isConfigured()) {
+          try {
+            final remotePath = '/feather_notes/note_$noteId.json';
+            await _syncManager.currentProvider!.deleteNote(remotePath);
+            print('Deleted note $noteId from cloud sync');
+          } catch (e) {
+            // Log error but don't fail the deletion
+            print('Error deleting note from cloud: $e');
+          }
+        }
+        
         // Delete from database
         await DatabaseHelper.instance.deleteNote(noteId);
         
@@ -1183,6 +1200,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         // Reload notes after database wipe
                         _loadNotes();
                       },
+                      onNotesChanged: () {
+                        // Reload notes after sync or other changes
+                        _loadNotes();
+                      },
                     ),
                   ),
                 );
@@ -1279,17 +1300,27 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
                   color: Colors.grey[700],
-                  child: SizedBox(
-                    height: 48, // Match IconButton height (48px)
-                    child: Center(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text(
-                          _isLoading 
-                              ? 'Loading...' 
-                              : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: Colors.white,
+                  child: InkWell(
+                    onTap: () {
+                      if (!_isLoading && selectedIndex >= 0 && selectedIndex < notes.length) {
+                        final noteId = notes[selectedIndex]['id'] as int;
+                        final noteTitle = notes[selectedIndex]['title'] as String;
+                        _showEditNoteDialog(context, noteId, noteTitle);
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      height: 48, // Match IconButton height (48px)
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: Text(
+                            _isLoading 
+                                ? 'Loading...' 
+                                : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
@@ -3449,11 +3480,13 @@ class _MinimapPainter extends CustomPainter {
 class SettingsPage extends StatefulWidget {
   final Future<void> Function(ThemeMode) onThemeModeChanged;
   final VoidCallback? onDatabaseWiped;
+  final VoidCallback? onNotesChanged;
   
   const SettingsPage({
     super.key,
     required this.onThemeModeChanged,
     this.onDatabaseWiped,
+    this.onNotesChanged,
   });
 
   @override
@@ -3616,13 +3649,107 @@ class _SettingsPageState extends State<SettingsPage> {
         },
         onNoteCreated: (noteData) async {
           // Create new note from remote using importNote
-          await DatabaseHelper.instance.importNote(noteData);
+          final note = noteData['note'] as Map<String, dynamic>?;
+          final canvas = noteData['canvas'] as Map<String, dynamic>?;
+          
+          if (note == null || canvas == null) {
+            print('Sync: Warning - noteData missing note or canvas field in onNoteCreated');
+            return;
+          }
+          
+          // Check if note with this ID already exists
+          final remoteNoteId = note['id'];
+          int? noteId;
+          
+          if (remoteNoteId != null) {
+            noteId = remoteNoteId is int ? remoteNoteId : int.tryParse(remoteNoteId.toString());
+            if (noteId != null) {
+              final existingNote = await DatabaseHelper.instance.getNote(noteId);
+              
+              if (existingNote != null) {
+                // Note already exists, update it instead of creating duplicate
+                print('Sync: Note $noteId already exists locally, updating instead of creating duplicate');
+                
+                // Update note title if changed
+                final titleValue = note['title'];
+                if (titleValue != null) {
+                  await DatabaseHelper.instance.updateNoteTitle(noteId, titleValue.toString());
+                }
+                
+                // Update tags
+                final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+                await DatabaseHelper.instance.setNoteTags(noteId, tags);
+                
+                // Update canvas data
+                final strokesData = canvas['strokes'] as List<dynamic>?;
+                final strokes = strokesData != null
+                    ? strokesData.map<Stroke>((s) {
+                        if (s is Map<String, dynamic>) {
+                          return Stroke.fromJson(s);
+                        } else if (s is String) {
+                          return Stroke.fromJson(jsonDecode(s) as Map<String, dynamic>);
+                        }
+                        return Stroke.fromJson(s as Map<String, dynamic>);
+                      }).toList()
+                    : <Stroke>[];
+                final textElementsData = canvas['text_elements'] as List<dynamic>?;
+                final textElements = textElementsData != null
+                    ? textElementsData.map<TextElement>((te) {
+                        if (te is Map<String, dynamic>) {
+                          return TextElement.fromJson(te);
+                        }
+                        return TextElement.fromJson(te as Map<String, dynamic>);
+                      }).toList()
+                    : <TextElement>[];
+                final matrixData = canvas['matrix'];
+                Matrix4 matrix = Matrix4.identity();
+                if (matrixData != null) {
+                  if (matrixData is List) {
+                    matrix = _parseMatrix(matrixData);
+                  } else if (matrixData is String) {
+                    final values = jsonDecode(matrixData) as List<dynamic>;
+                    matrix = _parseMatrix(values);
+                  }
+                }
+                final scale = (canvas['scale'] as num?)?.toDouble() ?? 1.0;
+                
+                final canvasData = NoteCanvasData(
+                  strokes: strokes,
+                  textElements: textElements,
+                  matrix: matrix,
+                  scale: scale,
+                );
+                
+                await DatabaseHelper.instance.saveCanvasData(noteId, canvasData);
+                return; // Already updated, don't create duplicate
+              }
+            }
+          }
+          
+          // Note doesn't exist, create it
+          noteId = await DatabaseHelper.instance.importNote(noteData);
+          
+          // Import tags if present
+          final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+          if (tags.isNotEmpty) {
+            await DatabaseHelper.instance.setNoteTags(noteId, tags);
+            print('Sync: Imported ${tags.length} tags for note $noteId');
+          }
         },
       );
 
       // Close loading dialog
       if (context.mounted) {
         Navigator.pop(context);
+      }
+
+      // Refresh notes list if any notes were downloaded or updated
+      // Always refresh to ensure UI is up to date, even if sync had partial success
+      if (result.downloaded > 0 || result.uploaded > 0) {
+        print('Sync: Refreshing notes list (downloaded: ${result.downloaded}, uploaded: ${result.uploaded})');
+        if (context.mounted && widget.onNotesChanged != null) {
+          widget.onNotesChanged!();
+        }
       }
 
       // Show results
@@ -3636,6 +3763,9 @@ class _SettingsPageState extends State<SettingsPage> {
         if (result.hasConflicts) {
           message += '\n${result.conflicts} conflict(s) detected';
         }
+        if (result.hasError) {
+          message += '\nError: ${result.error}';
+        }
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -3648,6 +3778,14 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (e) {
       if (context.mounted) {
         Navigator.pop(context);
+        // Try to refresh anyway in case some notes were saved before the error
+        if (widget.onNotesChanged != null) {
+          try {
+            widget.onNotesChanged!();
+          } catch (refreshError) {
+            print('Error refreshing notes after sync error: $refreshError');
+          }
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Sync failed: $e'),
@@ -3828,20 +3966,51 @@ class _SettingsPageState extends State<SettingsPage> {
       final exportData = await DatabaseHelper.instance.exportAllNotes();
       final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
       
-      // Get downloads directory or documents directory
-      final directory = await getApplicationDocumentsDirectory();
+      // Prompt user for save location
       final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-      final file = File('${directory.path}/feather_notes_export_$timestamp.json');
+      final defaultFileName = 'feather_notes_export_$timestamp.json';
       
-      await file.writeAsString(jsonString);
+      String? outputFile;
       
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Notes exported to: ${file.path}'),
-            duration: const Duration(seconds: 3),
-          ),
+      // Try to use file picker to save file (works on desktop and mobile)
+      try {
+        outputFile = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save export file',
+          fileName: defaultFileName,
+          type: FileType.custom,
+          allowedExtensions: ['json'],
         );
+      } catch (e) {
+        print('FilePicker save failed, using fallback: $e');
+      }
+      
+      // Fallback to Documents directory if file picker fails or is not available
+      if (outputFile == null) {
+        final directory = await getApplicationDocumentsDirectory();
+        outputFile = '${directory.path}/$defaultFileName';
+      }
+      
+      if (outputFile != null) {
+        final file = File(outputFile);
+        await file.writeAsString(jsonString);
+        
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Notes exported to: ${file.path}'),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        }
+      } else {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Export cancelled'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
       }
     } catch (e) {
       if (context.mounted) {

@@ -127,21 +127,42 @@ class NextcloudProvider implements SyncProvider {
       throw Exception('Nextcloud provider not configured');
     }
 
-    final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$remotePath');
+    // Ensure remotePath starts with /
+    final normalizedPath = remotePath.startsWith('/') ? remotePath : '/$remotePath';
+    final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$normalizedPath');
+    
+    print('DownloadNote: Downloading from URL: $url');
+    print('DownloadNote: Remote path: $normalizedPath');
+    
     final response = await http.get(
       url,
       headers: _getAuthHeaders(),
     );
 
+    print('DownloadNote: Response status: ${response.statusCode}');
+    print('DownloadNote: Response body length: ${response.body.length}');
+
     if (response.statusCode == 200) {
+      if (response.body.isEmpty) {
+        print('DownloadNote: WARNING - Response body is empty');
+        return null;
+      }
       try {
-        return jsonDecode(response.body) as Map<String, dynamic>;
-      } catch (e) {
+        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
+        print('DownloadNote: Successfully parsed JSON. Keys: ${decoded.keys.toList()}');
+        return decoded;
+      } catch (e, stackTrace) {
+        print('DownloadNote: ERROR parsing JSON: $e');
+        print('DownloadNote: Response body (first 500 chars): ${response.body.length > 500 ? response.body.substring(0, 500) : response.body}');
+        print('DownloadNote: Stack trace: $stackTrace');
         throw Exception('Failed to parse note data: $e');
       }
     } else if (response.statusCode == 404) {
+      print('DownloadNote: File not found (404) at path: $normalizedPath');
       return null;
     } else {
+      print('DownloadNote: Error ${response.statusCode}: ${response.reasonPhrase}');
+      print('DownloadNote: Response body: ${response.body}');
       throw Exception('Failed to download note: ${response.statusCode} ${response.reasonPhrase}');
     }
   }
@@ -153,9 +174,22 @@ class NextcloudProvider implements SyncProvider {
     }
 
     final url = Uri.parse('$_serverUrl/remote.php/dav/files/$_username$_basePath/');
-    final request = http.Request('PROPFIND', url);
+    
+    // Try PROPFIND with explicit properties first
+    http.Request request = http.Request('PROPFIND', url);
     request.headers.addAll(_getAuthHeaders());
     request.headers['Depth'] = '1';
+    
+    // Add request body for PROPFIND
+    request.body = '''<?xml version="1.0"?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:getlastmodified/>
+    <d:getcontentlength/>
+    <d:resourcetype/>
+  </d:prop>
+</d:propfind>''';
+    request.headers['Content-Type'] = 'application/xml; charset=utf-8';
     
     final client = http.Client();
     http.Response response;
@@ -166,7 +200,24 @@ class NextcloudProvider implements SyncProvider {
       client.close();
     }
 
-    if (response.statusCode != 207) {
+    // If the first attempt fails, try without request body (some servers prefer this)
+    if (response.statusCode != 207 && response.statusCode != 200) {
+      print('ListNotes: First attempt failed with ${response.statusCode}, trying without request body...');
+      final fallbackRequest = http.Request('PROPFIND', url);
+      fallbackRequest.headers.addAll(_getAuthHeaders());
+      fallbackRequest.headers['Depth'] = '1';
+      
+      final fallbackClient = http.Client();
+      try {
+        final fallbackStreamedResponse = await fallbackClient.send(fallbackRequest);
+        response = await http.Response.fromStream(fallbackStreamedResponse);
+        print('ListNotes: Fallback attempt returned ${response.statusCode}');
+      } finally {
+        fallbackClient.close();
+      }
+    }
+
+    if (response.statusCode != 207 && response.statusCode != 200) {
       // Directory might not exist yet, return empty map
       if (response.statusCode == 404) {
         print('ListNotes: Directory not found (404), returning empty map');
@@ -177,14 +228,12 @@ class NextcloudProvider implements SyncProvider {
       throw Exception('Failed to list notes: ${response.statusCode} ${response.reasonPhrase}');
     }
 
-    // Debug: Print raw response
     print('ListNotes: Response status: ${response.statusCode}');
     print('ListNotes: Response body length: ${response.body.length}');
-    print('ListNotes: Response body (first 500 chars): ${response.body.substring(0, response.body.length > 500 ? 500 : response.body.length)}');
 
     final notes = <String, Map<String, dynamic>>{};
     
-    // Try to parse XML
+    // Parse XML with proper namespace handling
     xml.XmlDocument document;
     try {
       document = xml.XmlDocument.parse(response.body);
@@ -194,182 +243,181 @@ class NextcloudProvider implements SyncProvider {
       return {};
     }
     
-    print('ListNotes: Parsed XML document successfully');
+    // Find all response elements using namespace-aware search
+    final davNamespace = 'DAV:';
+    final allResponses = document.findAllElements('response', namespace: davNamespace).toList();
     
-    // Check for different possible XML structures
-    final allResponses = document.findAllElements('response');
-    print('ListNotes: Found ${allResponses.length} response elements');
+    // If no namespace matches, try without namespace
+    final responseElements = allResponses.isNotEmpty 
+        ? allResponses 
+        : document.findAllElements('response').toList();
     
-    // Get all response elements, handling namespaces
-    // WebDAV PROPFIND responses have a multistatus root with response children
-    List<xml.XmlElement> responseElements = [];
+    print('ListNotes: Found ${responseElements.length} response elements');
+
+    // Expected base path pattern
+    final expectedBasePath = '/remote.php/dav/files/$_username$_basePath/';
     
-    // First, find the multistatus element (root of WebDAV response)
-    xml.XmlElement? multistatusElement;
-    
-    // Try finding multistatus without namespace
-    final multistatusCandidates = document.findAllElements('multistatus').toList();
-    if (multistatusCandidates.isNotEmpty) {
-      multistatusElement = multistatusCandidates.first;
-    } else {
-      // Try with d: prefix
-      final multistatusWithPrefix = document.findAllElements('d:multistatus').toList();
-      if (multistatusWithPrefix.isNotEmpty) {
-        multistatusElement = multistatusWithPrefix.first;
+    for (final responseElement in responseElements) {
+      // Find href - try with namespace first, then without
+      String? href;
+      final hrefElements = responseElement.findAllElements('href', namespace: davNamespace);
+      if (hrefElements.isNotEmpty) {
+        href = hrefElements.first.text;
       } else {
-        // Try finding by namespace URI (common WebDAV namespaces)
-        final allElements = document.findAllElements('*');
-        for (final element in allElements) {
-          if (element.name.local == 'multistatus') {
-            multistatusElement = element;
-            break;
+        final hrefNoNs = responseElement.findAllElements('href');
+        if (hrefNoNs.isNotEmpty) {
+          href = hrefNoNs.first.text;
+        }
+      }
+      
+      if (href == null || href.isEmpty) {
+        continue;
+      }
+      
+      // Decode URL-encoded href
+      href = Uri.decodeComponent(href);
+      
+      // Skip directories (end with /)
+      if (href.endsWith('/')) {
+        continue;
+      }
+      
+      // Extract path from href
+      String filePath = href;
+      if (href.startsWith('http://') || href.startsWith('https://')) {
+        final uri = Uri.parse(href);
+        filePath = uri.path;
+      }
+      
+      print('ListNotes: Processing href: $href -> filePath: $filePath');
+      
+      // Check if this is a note file
+      if (!filePath.contains('note_') || !filePath.endsWith('.json')) {
+        continue;
+      }
+      
+      // Extract the remote path - we need to preserve the /feather_notes/ prefix
+      // The href might be in formats like:
+      // - /remote.php/dav/files/username/feather_notes/note_123.json
+      // - https://server/remote.php/dav/files/username/feather_notes/note_123.json
+      
+      String remotePath;
+      
+      // Find the position of the base path in the file path
+      final basePathPattern = '$_basePath/';
+      final basePathIndex = filePath.indexOf(basePathPattern);
+      
+      if (basePathIndex != -1) {
+        // Extract everything from the base path onwards
+        remotePath = filePath.substring(basePathIndex);
+        // Ensure it starts with /
+        if (!remotePath.startsWith('/')) {
+          remotePath = '/$remotePath';
+        }
+        print('ListNotes: Extracted remotePath from basePath: $remotePath');
+      } else {
+        // Fallback: try to find just the filename and construct the full path
+        final fileName = filePath.split('/').last;
+        if (fileName.startsWith('note_') && fileName.endsWith('.json')) {
+          remotePath = '$_basePath/$fileName';
+          if (!remotePath.startsWith('/')) {
+            remotePath = '/$remotePath';
+          }
+          print('ListNotes: Constructed remotePath from filename: $remotePath');
+        } else {
+          print('ListNotes: Could not parse path from href: $href (filePath: $filePath)');
+          continue;
+        }
+      }
+      
+      // Final validation: ensure the path includes the base path
+      if (!remotePath.contains('$_basePath/')) {
+        print('ListNotes: WARNING - remotePath does not contain base path: $remotePath');
+        // Try to fix it
+        final fileName = remotePath.split('/').last;
+        if (fileName.startsWith('note_') && fileName.endsWith('.json')) {
+          remotePath = '$_basePath/$fileName';
+          if (!remotePath.startsWith('/')) {
+            remotePath = '/$remotePath';
+          }
+          print('ListNotes: Fixed remotePath to: $remotePath');
+        }
+      }
+      
+      // Extract metadata
+      DateTime? lastModified;
+      int? size;
+      
+      // Find propstat
+      final propstatElements = responseElement.findAllElements('propstat', namespace: davNamespace);
+      if (propstatElements.isEmpty) {
+        final propstatNoNs = responseElement.findAllElements('propstat');
+        if (propstatNoNs.isNotEmpty) {
+          final propstat = propstatNoNs.first;
+          final prop = propstat.findAllElements('prop').firstOrNull;
+          if (prop != null) {
+            final lastMod = prop.findAllElements('getlastmodified').firstOrNull;
+            if (lastMod != null) {
+              try {
+                lastModified = DateTime.parse(lastMod.text).toLocal();
+              } catch (e) {
+                print('ListNotes: Error parsing lastModified: $e');
+              }
+            }
+            final contentLength = prop.findAllElements('getcontentlength').firstOrNull;
+            if (contentLength != null && contentLength.text.isNotEmpty) {
+              size = int.tryParse(contentLength.text);
+            }
+          }
+        }
+      } else {
+        for (final propstat in propstatElements) {
+          // Check status - we want 200 OK
+          final status = propstat.findAllElements('status', namespace: davNamespace).firstOrNull;
+          if (status != null && !status.text.contains('200')) {
+            continue; // Skip non-200 status
+          }
+          
+          final prop = propstat.findAllElements('prop', namespace: davNamespace).firstOrNull;
+          if (prop != null) {
+            final lastMod = prop.findAllElements('getlastmodified', namespace: davNamespace).firstOrNull;
+            if (lastMod != null) {
+              try {
+                lastModified = DateTime.parse(lastMod.text).toLocal();
+              } catch (e) {
+                print('ListNotes: Error parsing lastModified: $e');
+              }
+            }
+            final contentLength = prop.findAllElements('getcontentlength', namespace: davNamespace).firstOrNull;
+            if (contentLength != null && contentLength.text.isNotEmpty) {
+              size = int.tryParse(contentLength.text);
+            }
+            break; // Found valid propstat, break
           }
         }
       }
-    }
-    
-    if (multistatusElement != null) {
-      print('ListNotes: Found multistatus element');
-      // Find all response elements within multistatus
-      responseElements = multistatusElement.findAllElements('response').toList();
-      if (responseElements.isEmpty) {
-        // Try with d: prefix
-        responseElements = multistatusElement.findAllElements('d:response').toList();
-      }
-      if (responseElements.isEmpty) {
-        // Try finding by local name regardless of namespace
-        responseElements = multistatusElement.children
-            .whereType<xml.XmlElement>()
-            .where((e) => e.name.local == 'response')
-            .toList();
-      }
-    } else {
-      // If no multistatus, try finding responses directly
-      print('ListNotes: No multistatus found, searching for responses directly');
-      responseElements = document.findAllElements('response').toList();
-      if (responseElements.isEmpty) {
-        responseElements = document.findAllElements('d:response').toList();
-      }
-      if (responseElements.isEmpty) {
-        // Try finding by local name
-        responseElements = document.findAllElements('*')
-            .where((e) => e.name.local == 'response')
-            .toList();
-      }
-    }
-    
-    print('ListNotes: Found ${responseElements.length} response elements (after namespace handling)');
-    
-    if (responseElements.isEmpty) {
-      // Print the entire document structure for debugging
-      print('ListNotes: Document root: ${document.rootElement.name.local}');
-      print('ListNotes: Root namespace: ${document.rootElement.name.namespaceUri}');
-      final rootChildren = document.rootElement.children.whereType<xml.XmlElement>().toList();
-      print('ListNotes: Root has ${rootChildren.length} child elements');
-      for (final child in rootChildren) {
-        print('ListNotes:   - ${child.name.local} (namespace: ${child.name.namespaceUri})');
-        final grandChildren = child.children.whereType<xml.XmlElement>().toList();
-        print('ListNotes:     Has ${grandChildren.length} children');
-        for (final gc in grandChildren.take(5)) {
-          print('ListNotes:       - ${gc.name.local} (namespace: ${gc.name.namespaceUri})');
+      
+      print('ListNotes: Found note file: $remotePath (lastModified: $lastModified, size: $size)');
+      
+      // Final validation: ensure path includes base directory
+      if (!remotePath.contains('$_basePath/')) {
+        print('ListNotes: ERROR - Path does not include base path! Fixing: $remotePath');
+        final fileName = remotePath.split('/').last;
+        remotePath = '$_basePath/$fileName';
+        if (!remotePath.startsWith('/')) {
+          remotePath = '/$remotePath';
         }
+        print('ListNotes: Fixed path to: $remotePath');
       }
-      print('ListNotes: Full XML (first 2000 chars): ${response.body.substring(0, response.body.length > 2000 ? 2000 : response.body.length)}');
+      
+      notes[remotePath] = {
+        'path': remotePath,
+        'lastModified': lastModified,
+        'size': size,
+      };
     }
 
-    for (final responseElement in responseElements) {
-      // Try to find href with and without namespace
-      xml.XmlElement? hrefElement = responseElement.findElements('href').firstOrNull;
-      if (hrefElement == null) {
-        hrefElement = responseElement.findElements('d:href', namespace: 'DAV:').firstOrNull;
-      }
-      final href = hrefElement?.text;
-      
-      if (href == null) {
-        print('ListNotes: Skipping response element - no href found');
-        continue;
-      }
-      
-      print('ListNotes: Processing href: $href');
-      
-      if (href.endsWith('/')) {
-        print('ListNotes: Skipping directory: $href');
-        continue; // Skip directories
-      }
-      
-      // Log all files found, even if they don't match our pattern
-      print('ListNotes: Found file: $href');
-
-      // Find propstat with namespace handling
-      xml.XmlElement? propstat = responseElement.findElements('propstat').firstOrNull;
-      if (propstat == null) {
-        propstat = responseElement.findElements('d:propstat', namespace: 'DAV:').firstOrNull;
-      }
-      if (propstat == null) {
-        print('ListNotes: Skipping $href - no propstat found');
-        continue;
-      }
-
-      // Find prop with namespace handling
-      xml.XmlElement? prop = propstat.findElements('prop').firstOrNull;
-      if (prop == null) {
-        prop = propstat.findElements('d:prop', namespace: 'DAV:').firstOrNull;
-      }
-      if (prop == null) {
-        print('ListNotes: Skipping $href - no prop found');
-        continue;
-      }
-
-      // Find getlastmodified with namespace handling
-      xml.XmlElement? lastModifiedElement = prop.findElements('getlastmodified').firstOrNull;
-      if (lastModifiedElement == null) {
-        lastModifiedElement = prop.findElements('d:getlastmodified', namespace: 'DAV:').firstOrNull;
-      }
-      final getLastModified = lastModifiedElement?.text;
-      
-      // Find getcontentlength with namespace handling
-      xml.XmlElement? contentLengthElement = prop.findElements('getcontentlength').firstOrNull;
-      if (contentLengthElement == null) {
-        contentLengthElement = prop.findElements('d:getcontentlength', namespace: 'DAV:').firstOrNull;
-      }
-      final getContentLength = contentLengthElement?.text;
-
-      if (href.contains('note_') && href.endsWith('.json')) {
-        // Extract the path - href might be full URL or just path
-        String remotePath;
-        if (href.startsWith('http')) {
-          // Full URL, extract just the path part
-          final uri = Uri.parse(href);
-          remotePath = uri.path;
-        } else {
-          // Just a path
-          remotePath = href;
-        }
-        
-        // Remove the /remote.php/dav/files/username prefix if present
-        final prefix = '/remote.php/dav/files/$_username';
-        if (remotePath.startsWith(prefix)) {
-          remotePath = remotePath.substring(prefix.length);
-        }
-        
-        // Ensure path starts with /feather_notes/ for consistency
-        if (!remotePath.startsWith('/feather_notes/')) {
-          // If it doesn't start with the base path, log it but still process it
-          // (might be in a different location or format)
-          print('ListNotes: Warning - path $remotePath does not start with /feather_notes/, but processing anyway');
-          // Don't skip - process it anyway in case the path format is different
-        }
-        
-        notes[remotePath] = {
-          'path': remotePath,
-          'lastModified': getLastModified != null 
-              ? DateTime.parse(getLastModified).toLocal()
-              : null,
-          'size': getContentLength != null ? int.tryParse(getContentLength) : null,
-        };
-      }
-    }
-
+    print('ListNotes: Returning ${notes.length} notes with paths: ${notes.keys.toList()}');
     return notes;
   }
 
@@ -559,6 +607,13 @@ class NextcloudProvider implements SyncProvider {
 
       // Download remote notes that are new or modified
       print('Sync: Starting download phase, processing ${remoteNotes.length} remote notes...');
+      if (remoteNotes.isEmpty) {
+        print('Sync: WARNING - No remote notes found. This could mean:');
+        print('Sync:   1. Directory is empty on server');
+        print('Sync:   2. listNotes() failed to parse files correctly');
+        print('Sync:   3. Files exist but are not being detected');
+      }
+      
       for (final entry in remoteNotes.entries) {
         final remotePath = entry.key;
         final remoteMetadata = entry.value;
@@ -584,61 +639,53 @@ class NextcloudProvider implements SyncProvider {
         final remoteModified = remoteMetadata['lastModified'] as DateTime?;
         
         if (localNotesMap.containsKey(remoteNoteId)) {
+          // Note exists locally - check if we need to update it
           final localNoteData = localNotesMap[remoteNoteId]!;
           final localNote = localNoteData['note'] as Map<String, dynamic>?;
           if (localNote == null) {
-            print('Sync: Warning: Local note data missing note field for ID $remoteNoteId');
-            continue;
-          }
-          final modifiedAtValue = localNote['modified_at'];
-          if (modifiedAtValue == null) {
-            print('Sync: Warning: Local note $remoteNoteId missing modified_at');
-            // If local note has no modified_at, download remote to update it
+            print('Sync: Warning: Local note data missing note field for ID $remoteNoteId - will download to fix');
             try {
               final remoteData = await downloadNote(remotePath);
               if (remoteData != null) {
-                onNoteUpdated(remoteNoteId, remoteData);
+                await onNoteUpdated(remoteNoteId, remoteData);
                 downloaded++;
+                print('Sync: Successfully downloaded and updated note $remoteNoteId (missing note field)');
               }
             } catch (e) {
-              print('Error downloading note $remoteNoteId: $e');
-            }
-            continue;
-          }
-          final localModified = _parseDateTime(modifiedAtValue);
-          if (localModified == null) {
-            print('Sync: Warning: Local note $remoteNoteId has invalid modified_at format: $modifiedAtValue');
-            // If local modified_at is invalid, download remote to fix it
-            try {
-              final remoteData = await downloadNote(remotePath);
-              if (remoteData != null) {
-                onNoteUpdated(remoteNoteId, remoteData);
-                downloaded++;
-              }
-            } catch (e) {
-              print('Error downloading note $remoteNoteId: $e');
+              print('Sync: Error downloading note $remoteNoteId: $e');
             }
             continue;
           }
           
-          // Download if remote is newer than local, or if remote modified time is null
-          // (null might indicate metadata parsing issue, but note exists on server)
-          final shouldDownload = remoteModified == null || remoteModified.isAfter(localModified);
+          final modifiedAtValue = localNote['modified_at'];
+          DateTime? localModified;
+          
+          if (modifiedAtValue != null) {
+            localModified = _parseDateTime(modifiedAtValue);
+          }
+          
+          // Determine if we should download:
+          // 1. If local modified_at is missing or invalid, download
+          // 2. If remote is newer, download
+          // 3. If remote modified time is unknown (null), still download to be safe
+          final shouldDownload = localModified == null || 
+                                 remoteModified == null || 
+                                 remoteModified.isAfter(localModified);
           
           if (shouldDownload) {
-            // Remote is newer or unknown - download it
             try {
               print('Sync: Downloading note $remoteNoteId (remote: $remoteModified, local: $localModified)');
               final remoteData = await downloadNote(remotePath);
               if (remoteData != null) {
-                onNoteUpdated(remoteNoteId, remoteData);
+                await onNoteUpdated(remoteNoteId, remoteData);
                 downloaded++;
                 print('Sync: Successfully downloaded and updated note $remoteNoteId');
               } else {
                 print('Sync: Warning: downloadNote returned null for note $remoteNoteId');
               }
-            } catch (e) {
-              print('Error downloading note $remoteNoteId: $e');
+            } catch (e, stackTrace) {
+              print('Sync: Error downloading note $remoteNoteId: $e');
+              print('Sync: Stack trace: $stackTrace');
             }
           } else {
             print('Sync: Skipping note $remoteNoteId (local is newer or same: local=$localModified, remote=$remoteModified)');
@@ -658,13 +705,16 @@ class NextcloudProvider implements SyncProvider {
               print('Sync: Successfully created note $remoteNoteId locally');
             } else {
               print('Sync: ERROR - downloadNote returned null for new note at $remotePath');
+              print('Sync: This might indicate the file exists but cannot be downloaded');
             }
           } catch (e, stackTrace) {
-            print('ERROR downloading new note $remoteNoteId: $e');
-            print('Stack trace: $stackTrace');
+            print('Sync: ERROR downloading new note $remoteNoteId: $e');
+            print('Sync: Stack trace: $stackTrace');
           }
         }
       }
+      
+      print('Sync: Download phase complete. Downloaded $downloaded notes.');
 
       return SyncResult(
         uploaded: uploaded,

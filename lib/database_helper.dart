@@ -309,6 +309,7 @@ class DatabaseHelper {
     batch.delete('text_elements');
     batch.delete('canvas_state');
     batch.delete('notes');
+    batch.delete('folders'); // Also delete folders
     
     await batch.commit(noResult: true);
     
@@ -587,12 +588,61 @@ class DatabaseHelper {
       throw Exception('Note data missing note or canvas: $noteData');
     }
 
-    // Create note
+    // Get note ID from data if present, otherwise create new
+    final noteIdValue = note['id'];
+    int? noteId;
+    
+    if (noteIdValue != null) {
+      noteId = noteIdValue is int ? noteIdValue : int.tryParse(noteIdValue.toString());
+    }
+
+    // Create note with specific ID if provided, otherwise auto-increment
     final titleValue = note['title'];
     if (titleValue == null) {
       throw Exception('Note missing title field');
     }
-    final noteId = await createNote(titleValue.toString());
+    
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    
+    // Get created_at and modified_at from note data if available, otherwise use current time
+    final createdAt = note['created_at'] as int? ?? now;
+    final modifiedAt = note['modified_at'] as int? ?? now;
+    final folderId = note['folder_id'] as int?;
+    
+    if (noteId != null) {
+      // Insert with specific ID, using replace conflict algorithm in case it already exists
+      noteId = await db.insert(
+        'notes',
+        {
+          'id': noteId,
+          'title': titleValue.toString(),
+          'created_at': createdAt,
+          'modified_at': modifiedAt,
+          'folder_id': folderId,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } else {
+      // Auto-increment ID
+      noteId = await db.insert('notes', {
+        'title': titleValue.toString(),
+        'created_at': createdAt,
+        'modified_at': modifiedAt,
+        'folder_id': folderId,
+      });
+    }
+    
+    // Initialize or update canvas state
+    await db.insert(
+      'canvas_state',
+      {
+        'note_id': noteId,
+        'matrix_data': _matrixToJson(Matrix4.identity()),
+        'scale': 1.0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
 
     // Reconstruct canvas data
     final strokesData = canvas['strokes'];

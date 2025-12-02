@@ -52,7 +52,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -75,9 +75,33 @@ class DatabaseHelper {
       await db.execute('CREATE INDEX IF NOT EXISTS idx_note_tags_note_id ON note_tags(note_id)');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag)');
     }
+    if (oldVersion < 3) {
+      // Add folders table
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS folders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          sort_order INTEGER DEFAULT 0
+        )
+      ''');
+      // Add folder_id column to notes table
+      await db.execute('ALTER TABLE notes ADD COLUMN folder_id INTEGER');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
+    // Folders table
+    await db.execute('''
+      CREATE TABLE folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        sort_order INTEGER DEFAULT 0
+      )
+    ''');
+    
     // Notes table
     await db.execute('''
       CREATE TABLE notes (
@@ -85,7 +109,9 @@ class DatabaseHelper {
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         modified_at INTEGER NOT NULL,
-        tags TEXT
+        tags TEXT,
+        folder_id INTEGER,
+        FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
       )
     ''');
     
@@ -99,6 +125,8 @@ class DatabaseHelper {
         UNIQUE(note_id, tag)
       )
     ''');
+    
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)');
 
     // Strokes table
     await db.execute('''
@@ -142,7 +170,7 @@ class DatabaseHelper {
   }
 
   // Note operations
-  Future<int> createNote(String title) async {
+  Future<int> createNote(String title, {int? folderId}) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;
     
@@ -150,6 +178,7 @@ class DatabaseHelper {
       'title': title,
       'created_at': now,
       'modified_at': now,
+      'folder_id': folderId,
     });
 
     // Initialize canvas state
@@ -162,7 +191,7 @@ class DatabaseHelper {
     return id;
   }
 
-  Future<List<Map<String, dynamic>>> getAllNotes({String? searchQuery, String? sortBy, List<String>? filterTags}) async {
+  Future<List<Map<String, dynamic>>> getAllNotes({String? searchQuery, String? sortBy, List<String>? filterTags, int? folderId}) async {
     final db = await database;
     String whereClause = '';
     List<dynamic> whereArgs = [];
@@ -181,6 +210,15 @@ class DatabaseHelper {
       final placeholders = filterTags.map((_) => '?').join(',');
       whereClause += 'id IN (SELECT DISTINCT note_id FROM note_tags WHERE tag IN ($placeholders))';
       whereArgs.addAll(filterTags);
+    }
+    
+    // Build folder filter
+    if (folderId != null) {
+      if (whereClause.isNotEmpty) {
+        whereClause += ' AND ';
+      }
+      whereClause += 'folder_id = ?';
+      whereArgs.add(folderId);
     }
     
     // Build sort clause
@@ -220,6 +258,7 @@ class DatabaseHelper {
         'created_at': note['created_at'],
         'modified_at': note['modified_at'],
         'tags': tags,
+        'folder_id': note['folder_id'], // Include folder_id
       });
     }
     
@@ -305,6 +344,65 @@ class DatabaseHelper {
   Future<int> deleteNote(int id) async {
     final db = await database;
     return await db.delete('notes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // Folder operations
+  Future<int> createFolder(String name) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Get max sort_order and add 1
+    final result = await db.rawQuery('SELECT MAX(sort_order) as max_order FROM folders');
+    final maxOrder = result.first['max_order'] as int? ?? -1;
+    
+    return await db.insert('folders', {
+      'name': name,
+      'created_at': now,
+      'sort_order': maxOrder + 1,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getAllFolders() async {
+    final db = await database;
+    return await db.query(
+      'folders',
+      orderBy: 'sort_order ASC, created_at ASC',
+    );
+  }
+
+  Future<int> updateFolderName(int id, String name) async {
+    final db = await database;
+    return await db.update(
+      'folders',
+      {'name': name},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> deleteFolder(int id) async {
+    final db = await database;
+    // First, move all notes in this folder to null (no folder)
+    await db.update(
+      'notes',
+      {'folder_id': null},
+      where: 'folder_id = ?',
+      whereArgs: [id],
+    );
+    // Then delete the folder
+    return await db.delete('folders', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<int> moveNoteToFolder(int noteId, int? folderId) async {
+    final db = await database;
+    return await db.update(
+      'notes',
+      {
+        'folder_id': folderId,
+        'modified_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [noteId],
+    );
   }
 
   // Canvas data operations

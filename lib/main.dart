@@ -115,10 +115,13 @@ class NotesHomePage extends StatefulWidget {
 }
 
 class _NotesHomePageState extends State<NotesHomePage> {
-  final List<Map<String, dynamic>> notes = []; // {id, title, tags}
+  final List<Map<String, dynamic>> notes = []; // {id, title, tags, folder_id}
+  final List<Map<String, dynamic>> folders = []; // {id, name, created_at, sort_order}
   int selectedIndex = 0;
   int? _editingIndex;
+  int? _editingFolderIndex;
   final Map<int, TextEditingController> _noteControllers = {};
+  final Map<int, TextEditingController> _folderControllers = {};
   final Map<int, NoteCanvasData> _noteCanvasData = {};
   bool _isLoading = true;
   bool _isCreatingDefaultNote = false; // Flag to prevent recursion
@@ -132,6 +135,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
   String _sortBy = 'id'; // 'id', 'title', 'date_created', 'date_modified'
   List<String> _selectedTags = [];
   List<String> _availableTags = [];
+  
+  // Folder expansion state
+  final Set<int> _expandedFolders = {};
+  
+  // Scaffold key for drawer control
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   @override
   void initState() {
@@ -143,6 +152,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
     try {
       // Load available tags
       final tags = await DatabaseHelper.instance.getAllTags();
+      
+      // Load folders
+      final foldersList = await DatabaseHelper.instance.getAllFolders();
       
       // Load notes with search, sort, and filter
       final notesList = await DatabaseHelper.instance.getAllNotes(
@@ -157,10 +169,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
       for (final n in notesList) {
         final noteId = n['id'] as int;
         final noteTags = n['tags'] as List<String>? ?? [];
+        final folderId = n['folder_id'] as int?;
         loadedNotes.add({
           'id': noteId,
           'title': n['title'] as String,
           'tags': noteTags,
+          'folder_id': folderId,
         });
         
         // Load canvas data for each note to ensure correct alignment
@@ -207,10 +221,15 @@ class _NotesHomePageState extends State<NotesHomePage> {
       setState(() {
         notes.clear();
         notes.addAll(loadedNotes);
+        folders.clear();
+        folders.addAll(foldersList);
         _noteCanvasData.clear();
         _noteCanvasData.addAll(loadedCanvasData);
         _availableTags = tags;
-        selectedIndex = 0;
+        // Only reset selectedIndex if current selection is invalid
+        if (selectedIndex >= notes.length || selectedIndex < 0) {
+          selectedIndex = notes.isNotEmpty ? 0 : -1;
+        }
         _isLoading = false;
       });
     } catch (e) {
@@ -234,6 +253,594 @@ class _NotesHomePageState extends State<NotesHomePage> {
       _isLoading = true;
     });
     _loadNotes();
+  }
+
+  Widget _buildNotesList() {
+    // Group notes by folder
+    final Map<int?, List<Map<String, dynamic>>> notesByFolder = {};
+    final List<int> noteIndices = [];
+    
+    for (int i = 0; i < notes.length; i++) {
+      final folderId = notes[i]['folder_id'] as int?;
+      if (!notesByFolder.containsKey(folderId)) {
+        notesByFolder[folderId] = [];
+      }
+      notesByFolder[folderId]!.add(notes[i]);
+      noteIndices.add(i);
+    }
+    
+    return ListView(
+      children: [
+        // Notes without folders first
+        if (notesByFolder.containsKey(null) && notesByFolder[null]!.isNotEmpty)
+          ...notesByFolder[null]!.asMap().entries.map((entry) {
+            final note = entry.value;
+            final i = notes.indexWhere((n) => n['id'] == note['id']);
+            return _buildNoteTile(i, note);
+          }),
+        
+        // Folders with their notes
+        ...folders.map((folder) {
+          final folderId = folder['id'] as int;
+          final folderNotes = notesByFolder[folderId] ?? [];
+          final isExpanded = _expandedFolders.contains(folderId);
+          
+          return ExpansionTile(
+            title: Row(
+              children: [
+                const Icon(Icons.folder, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(folder['name'] as String),
+                ),
+              ],
+            ),
+            initiallyExpanded: isExpanded,
+            onExpansionChanged: (expanded) {
+              // Prevent drawer from closing when expanding/collapsing folders
+              setState(() {
+                if (expanded) {
+                  _expandedFolders.add(folderId);
+                } else {
+                  _expandedFolders.remove(folderId);
+                }
+              });
+            },
+            // Prevent the tile from closing the drawer
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: EdgeInsets.zero,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit, size: 18),
+                  tooltip: 'Edit Folder Name',
+                  onPressed: () {
+                    _showEditFolderDialog(context, folderId, folder['name'] as String);
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.delete, size: 18),
+                  color: Colors.red,
+                  onPressed: () => _deleteFolder(context, folderId),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add, size: 18),
+                  tooltip: 'Add Note to Folder',
+                  onPressed: () => _showCreateNoteDialog(context, folderId),
+                ),
+              ],
+            ),
+            children: folderNotes.isEmpty
+                ? [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Text(
+                        'No notes in this folder',
+                        style: TextStyle(
+                          color: Colors.grey[600],
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                  ]
+                : folderNotes.map((note) {
+                    final i = notes.indexWhere((n) => n['id'] == note['id']);
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 16.0),
+                      child: _buildNoteTile(i, note),
+                    );
+                  }).toList(),
+          );
+        }),
+        
+        // Add folder button - use InkWell to prevent drawer from closing
+        InkWell(
+          onTap: () {
+            // Don't close drawer - show dialog instead
+            _showCreateFolderDialog(context);
+          },
+          child: const ListTile(
+            leading: Icon(Icons.create_new_folder),
+            title: Text('New Folder'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNoteTile(int i, Map<String, dynamic> note) {
+    final noteId = note['id'] as int;
+    final noteTags = note['tags'] as List<String>? ?? [];
+    
+    return ListTile(
+      title: Text(note['title'] as String),
+      subtitle: noteTags.isNotEmpty
+          ? Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: noteTags.map((tag) => Chip(
+                label: Text(tag, style: const TextStyle(fontSize: 10)),
+                padding: EdgeInsets.zero,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              )).toList(),
+            )
+          : null,
+      selected: i == selectedIndex,
+      onTap: () async {
+        setState(() {
+          selectedIndex = i;
+        });
+        // Ensure we load the correct note data before switching
+        await _loadNoteData(noteId);
+        if (context.mounted) {
+          Navigator.pop(context);
+        }
+      },
+      onLongPress: () {
+        // Show edit dialog on long press
+        _showEditNoteDialog(context, noteId, note['title'] as String);
+      },
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.label_outline, size: 20),
+            tooltip: 'Edit Tags',
+            onPressed: () => _showTagEditor(context, noteId, noteTags),
+          ),
+          IconButton(
+            icon: const Icon(Icons.folder_outlined, size: 20),
+            tooltip: 'Move to Folder',
+            onPressed: () => _showMoveToFolderDialog(context, noteId, note['folder_id'] as int?),
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit, size: 20),
+            tooltip: 'Edit Name',
+            onPressed: () {
+              _showEditNoteDialog(context, noteId, note['title'] as String);
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete, size: 20),
+            color: Colors.red,
+            onPressed: () => _deleteNote(context, i, noteId),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showEditNoteDialog(BuildContext context, int noteId, String currentTitle) async {
+    final controller = TextEditingController(text: currentTitle);
+    // Get scaffold to keep drawer open
+    final scaffoldState = _scaffoldKey.currentState;
+    final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final result = await showDialog<String>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Note Name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Note title',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(context, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(context, controller.text.trim());
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty && result != currentTitle) {
+      await DatabaseHelper.instance.updateNoteTitle(noteId, result);
+      await _loadNotes();
+      
+      // Reopen drawer if it was open before
+      if (wasDrawerOpen && scaffoldState != null) {
+        scaffoldState.openDrawer();
+      }
+    } else if (wasDrawerOpen && scaffoldState != null) {
+      // Reopen drawer if dialog was cancelled
+      scaffoldState.openDrawer();
+    }
+  }
+
+  Future<void> _showEditFolderDialog(BuildContext context, int folderId, String currentName) async {
+    final controller = TextEditingController(text: currentName);
+    // Get scaffold to keep drawer open
+    final scaffoldState = _scaffoldKey.currentState;
+    final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final result = await showDialog<String>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Folder Name'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Folder name',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(context, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(context, controller.text.trim());
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty && result != currentName) {
+      await DatabaseHelper.instance.updateFolderName(folderId, result);
+      await _loadNotes();
+      
+      // Reopen drawer if it was open before
+      if (wasDrawerOpen && scaffoldState != null) {
+        scaffoldState.openDrawer();
+      }
+    } else if (wasDrawerOpen && scaffoldState != null) {
+      // Reopen drawer if dialog was cancelled
+      scaffoldState.openDrawer();
+    }
+  }
+
+  Future<void> _showCreateFolderDialog(BuildContext context) async {
+    final controller = TextEditingController();
+    // Get scaffold to keep drawer open
+    final scaffoldState = _scaffoldKey.currentState;
+    final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final result = await showDialog<String>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('New Folder'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Folder name',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(context, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(context, controller.text.trim());
+              }
+            },
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty) {
+      final newFolderId = await DatabaseHelper.instance.createFolder(result);
+      await _loadNotes();
+      
+      // Expand the newly created folder
+      setState(() {
+        _expandedFolders.add(newFolderId);
+      });
+      
+      // Reopen drawer if it was open before
+      if (wasDrawerOpen && scaffoldState != null) {
+        scaffoldState.openDrawer();
+      }
+    } else if (wasDrawerOpen && scaffoldState != null) {
+      // Reopen drawer if dialog was cancelled
+      scaffoldState.openDrawer();
+    }
+  }
+
+  Future<void> _deleteFolder(BuildContext context, int folderId) async {
+    // Get scaffold to keep drawer open
+    final scaffoldState = _scaffoldKey.currentState;
+    final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final confirmed = await showDialog<bool>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Folder'),
+        content: const Text('Are you sure you want to delete this folder? Notes in this folder will be moved to the root.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      await DatabaseHelper.instance.deleteFolder(folderId);
+      _loadNotes();
+      
+      // Reopen drawer if it was open before
+      if (wasDrawerOpen && scaffoldState != null) {
+        scaffoldState.openDrawer();
+      }
+    } else if (wasDrawerOpen && scaffoldState != null) {
+      // Reopen drawer if dialog was cancelled
+      scaffoldState.openDrawer();
+    }
+  }
+
+  Future<void> _showCreateNoteDialog(BuildContext context, int? folderId) async {
+    final controller = TextEditingController();
+    // Get scaffold to keep drawer open
+    final scaffoldState = _scaffoldKey.currentState;
+    final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final result = await showDialog<String>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('New Note'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Note title',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) {
+            if (value.trim().isNotEmpty) {
+              Navigator.pop(context, value.trim());
+            }
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (controller.text.trim().isNotEmpty) {
+                Navigator.pop(context, controller.text.trim());
+              }
+            },
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+    
+    if (result != null && result.isNotEmpty) {
+      final newNoteId = await DatabaseHelper.instance.createNote(result, folderId: folderId);
+      
+      // If note was created in a folder, expand that folder
+      if (folderId != null) {
+        setState(() {
+          _expandedFolders.add(folderId);
+        });
+      }
+      
+      // Reload notes to get the new note in the list
+      await _loadNotes();
+      
+      // Find and select the newly created note after reload
+      setState(() {
+        final index = notes.indexWhere((n) => n['id'] == newNoteId);
+        if (index >= 0) {
+          selectedIndex = index;
+        }
+      });
+      
+      // Load the note data if we found it
+      if (selectedIndex >= 0 && selectedIndex < notes.length) {
+        final noteId = notes[selectedIndex]['id'] as int;
+        await _loadNoteData(noteId);
+      }
+      
+      // Reopen drawer if it was open before
+      if (wasDrawerOpen && scaffoldState != null) {
+        scaffoldState.openDrawer();
+      }
+    } else if (wasDrawerOpen && scaffoldState != null) {
+      // Reopen drawer if dialog was cancelled
+      scaffoldState.openDrawer();
+    }
+  }
+
+  Future<void> _showMoveToFolderDialog(BuildContext context, int noteId, int? currentFolderId) async {
+    // Use a sentinel value to distinguish between cancel and "No Folder" selection
+    // -1 = cancelled, -2 = "No Folder" (null), positive = folderId
+    const int cancelSentinel = -1;
+    const int noFolderSentinel = -2;
+    
+    // Use rootNavigator: false to prevent drawer from closing
+    final result = await showDialog<int>(
+      context: context,
+      useRootNavigator: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Move to Folder'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.folder_off),
+                title: const Text('No Folder'),
+                selected: currentFolderId == null,
+                onTap: () => Navigator.pop(context, noFolderSentinel),
+              ),
+              const Divider(),
+              if (folders.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(16.0),
+                  child: Text(
+                    'No folders available. Create a folder first.',
+                    style: TextStyle(fontStyle: FontStyle.italic),
+                  ),
+                )
+              else
+                ...folders.map((folder) {
+                  final folderId = folder['id'] as int;
+                  return ListTile(
+                    leading: const Icon(Icons.folder),
+                    title: Text(folder['name'] as String),
+                    selected: currentFolderId == folderId,
+                    onTap: () => Navigator.pop(context, folderId),
+                  );
+                }),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, cancelSentinel),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    
+    // Only move if user selected a different folder (not cancelled)
+    if (result == null || result == cancelSentinel) {
+      return; // User cancelled or dialog was dismissed
+    }
+    
+    final targetFolderId = result == noFolderSentinel ? null : result;
+    if (targetFolderId != currentFolderId) {
+      try {
+        // Move the note in the database
+        final rowsAffected = await DatabaseHelper.instance.moveNoteToFolder(noteId, targetFolderId);
+        
+        if (rowsAffected > 0) {
+          // If moving to a folder, expand that folder
+          if (targetFolderId != null) {
+            setState(() {
+              _expandedFolders.add(targetFolderId);
+            });
+          }
+          
+          // Reload notes to reflect the change
+          await _loadNotes();
+          
+          // Find and maintain selection of the moved note
+          setState(() {
+            final index = notes.indexWhere((n) => n['id'] == noteId);
+            if (index >= 0) {
+              selectedIndex = index;
+            }
+          });
+          
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Note moved'),
+                duration: Duration(seconds: 1),
+              ),
+            );
+          }
+        } else {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Note not found or already in that folder'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to move note: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    }
   }
 
   Future<void> _createDefaultNote() async {
@@ -457,10 +1064,8 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final scaffoldKey = GlobalKey<ScaffoldState>();
-    
     return Scaffold(
-      key: scaffoldKey,
+      key: _scaffoldKey,
       backgroundColor: Theme.of(context).canvasColor,
       drawer: Drawer(
         child: Column(
@@ -555,159 +1160,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 ),
               ),
             Expanded(
-              child: ListView.builder(
-                itemCount: notes.length,
-                itemBuilder: (context, i) {
-                  final noteId = notes[i]['id'] as int;
-                  final noteTags = notes[i]['tags'] as List<String>? ?? [];
-                  if (_editingIndex == i) {
-                    if (!_noteControllers.containsKey(noteId)) {
-                      _noteControllers[noteId] = TextEditingController(text: notes[i]['title'] as String);
-                    }
-                    return ListTile(
-                      onTap: () {
-                        // Prevent drawer from closing when tapping the list tile during editing
-                      },
-                      title: TextField(
-                        controller: _noteControllers[noteId],
-                        autofocus: true,
-                        style: const TextStyle(fontSize: 16),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          isDense: true,
-                        ),
-                        onSubmitted: (value) async {
-                          // Don't close drawer - just save and exit edit mode
-                          if (value.trim().isNotEmpty) {
-                            await DatabaseHelper.instance.updateNoteTitle(noteId, value.trim());
-                            setState(() {
-                              notes[i]['title'] = value.trim();
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                            // Reload notes to refresh the list
-                            _loadNotes();
-                          } else {
-                            setState(() {
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                          }
-                        },
-                        onEditingComplete: () async {
-                          // Don't close drawer - just save and exit edit mode
-                          final value = _noteControllers[noteId]?.text.trim() ?? '';
-                          if (value.isNotEmpty) {
-                            await DatabaseHelper.instance.updateNoteTitle(noteId, value);
-                            setState(() {
-                              notes[i]['title'] = value;
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                            // Reload notes to refresh the list
-                            _loadNotes();
-                          } else {
-                            setState(() {
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                          }
-                        },
-                        onTap: () {
-                          // Prevent drawer from closing when tapping the text field
-                        },
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.check),
-                        onPressed: () async {
-                          // Don't close drawer - just save and exit edit mode
-                          final value = _noteControllers[noteId]?.text.trim() ?? '';
-                          if (value.isNotEmpty) {
-                            await DatabaseHelper.instance.updateNoteTitle(noteId, value);
-                            setState(() {
-                              notes[i]['title'] = value;
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                            // Reload notes to refresh the list
-                            _loadNotes();
-                          } else {
-                            setState(() {
-                              _editingIndex = null;
-                              _noteControllers[noteId]?.dispose();
-                              _noteControllers.remove(noteId);
-                            });
-                          }
-                        },
-                      ),
-                    );
-                  }
-                  return ListTile(
-                    title: Text(notes[i]['title'] as String),
-                    subtitle: noteTags.isNotEmpty
-                        ? Wrap(
-                            spacing: 4,
-                            runSpacing: 4,
-                            children: noteTags.map((tag) => Chip(
-                              label: Text(tag, style: const TextStyle(fontSize: 10)),
-                              padding: EdgeInsets.zero,
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            )).toList(),
-                          )
-                        : null,
-                    selected: i == selectedIndex,
-                    onTap: () async {
-                      // Don't close drawer if we're currently editing this note
-                      if (_editingIndex == i) {
-                        return; // Stay in edit mode, don't close drawer
-                      }
-                      setState(() {
-                        selectedIndex = i;
-                      });
-                      // Ensure we load the correct note data before switching
-                      await _loadNoteData(noteId);
-                      if (context.mounted) {
-                        Navigator.pop(context);
-                      }
-                    },
-                    onLongPress: () {
-                      setState(() {
-                        _editingIndex = i;
-                      });
-                    },
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.label_outline, size: 20),
-                          tooltip: 'Edit Tags',
-                          onPressed: () => _showTagEditor(context, noteId, noteTags),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.edit, size: 20),
-                          onPressed: () {
-                            // Prevent drawer from closing when starting to edit
-                            setState(() {
-                              _editingIndex = i;
-                            });
-                            // Keep drawer open by not calling Navigator.pop
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.delete, size: 20),
-                          color: Colors.red,
-                          onPressed: () => _deleteNote(context, i, noteId),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+              child: _buildNotesList(),
             ),
             const Divider(),
             ListTile(
@@ -770,7 +1223,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   color: Colors.grey[700],
                   child: IconButton(
                     icon: const Icon(Icons.menu),
-                    onPressed: () => scaffoldKey.currentState?.openDrawer(),
+                    onPressed: () => _scaffoldKey.currentState?.openDrawer(),
                     tooltip: 'Menu',
                   ),
                 ),
@@ -1943,42 +2396,42 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         border: Border.all(color: Colors.grey.shade300),
                       ),
                       child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // Tab selector for picker type
-                        SizedBox(
-                          width: pickerWidth,
-                          child: Row(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: TextButton.icon(
-                              icon: const Icon(Icons.grid_view, size: 18),
-                              label: const Text('Presets'),
-                              onPressed: () => setState(() => _useColorWheel = false),
-                              style: TextButton.styleFrom(
-                                backgroundColor: !_useColorWheel
-                                    ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
-                                    : null,
-                              ),
+                          // Tab selector for picker type
+                          SizedBox(
+                            width: pickerWidth,
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: TextButton.icon(
+                                    icon: const Icon(Icons.grid_view, size: 18),
+                                    label: const Text('Presets'),
+                                    onPressed: () => setState(() => _useColorWheel = false),
+                                    style: TextButton.styleFrom(
+                                      backgroundColor: !_useColorWheel
+                                          ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextButton.icon(
+                                    icon: const Icon(Icons.color_lens, size: 18),
+                                    label: const Text('Custom'),
+                                    onPressed: () => setState(() => _useColorWheel = true),
+                                    style: TextButton.styleFrom(
+                                      backgroundColor: _useColorWheel
+                                          ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                          : null,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextButton.icon(
-                              icon: const Icon(Icons.color_lens, size: 18),
-                              label: const Text('Custom'),
-                              onPressed: () => setState(() => _useColorWheel = true),
-                              style: TextButton.styleFrom(
-                                backgroundColor: _useColorWheel
-                                    ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
-                                    : null,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                        // Color picker widget (BlockPicker or ColorPicker)
+                          // Color picker widget (BlockPicker or ColorPicker)
                         _useColorWheel
                             ? MediaQuery(
                                 // Override MediaQuery to give ColorPicker a fixed width context
@@ -2028,26 +2481,26 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                   ),
                                 ),
                               ),
-                        const SizedBox(height: 8),
-                        SizedBox(
-                          width: pickerWidth,
-                          child: Row(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          TextButton.icon(
-                            icon: const Icon(Icons.check, size: 18),
-                            label: const Text('Done'),
-                            onPressed: () => setState(() => _showColorPicker = false),
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            width: pickerWidth,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                TextButton.icon(
+                                  icon: const Icon(Icons.check, size: 18),
+                                  label: const Text('Done'),
+                                  onPressed: () => setState(() => _showColorPicker = false),
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-            ),
-          );
+              );
             },
           ),
         // Font size adjuster (shown when in text mode and menu is open)

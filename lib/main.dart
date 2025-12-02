@@ -270,6 +270,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     }
     
     return ListView(
+      padding: EdgeInsets.zero,
       children: [
         // Notes without folders first
         if (notesByFolder.containsKey(null) && notesByFolder[null]!.isNotEmpty)
@@ -307,7 +308,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
               });
             },
             // Prevent the tile from closing the drawer
-            tilePadding: EdgeInsets.zero,
+            tilePadding: const EdgeInsets.symmetric(horizontal: 16.0),
             childrenPadding: EdgeInsets.zero,
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
@@ -354,16 +355,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
           );
         }),
         
-        // Add folder button - use InkWell to prevent drawer from closing
-        InkWell(
+        // Add folder button
+        ListTile(
+          leading: const Icon(Icons.create_new_folder),
+          title: const Text('New Folder'),
           onTap: () {
             // Don't close drawer - show dialog instead
             _showCreateFolderDialog(context);
           },
-          child: const ListTile(
-            leading: Icon(Icons.create_new_folder),
-            title: Text('New Folder'),
-          ),
         ),
       ],
     );
@@ -1070,9 +1069,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
       drawer: Drawer(
         child: Column(
           children: [
-            DrawerHeader(
+            // Header with safe area padding for Android status bar
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                MediaQuery.of(context).padding.top + 16,
+                16,
+                16,
+              ),
               child: Align(
-                alignment: Alignment.bottomLeft,
+                alignment: Alignment.centerLeft,
                 child: Text(
                   'Your Notes',
                   style: Theme.of(context).textTheme.headlineMedium,
@@ -1113,7 +1119,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
             ),
             // Sort dropdown
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
               child: DropdownButton<String>(
                 value: _sortBy,
                 isExpanded: true,
@@ -1136,7 +1142,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
             // Tags filter
             if (_availableTags.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
                 child: Wrap(
                   spacing: 4,
                   runSpacing: 4,

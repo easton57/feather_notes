@@ -369,31 +369,55 @@ class _CloudSyncDialogState extends State<CloudSyncDialog> {
         ),
       ),
       actions: [
-        if (_isConfigured)
-          TextButton(
-            onPressed: _disconnect,
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Disconnect'),
-          ),
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
+        // Use Column with two Rows to force two rows on Android
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            // First row - Test Connection and Save
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton(
+                  onPressed: _isTesting ? null : _testConnection,
+                  child: _isTesting
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Test Connection'),
+                ),
+                if (computedSelectedProvider != null) ...[
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: _saveConfiguration,
+                    child: const Text('Save'),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            // Second row - Disconnect and Cancel
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_isConfigured)
+                  TextButton(
+                    onPressed: _disconnect,
+                    style: TextButton.styleFrom(foregroundColor: Colors.red),
+                    child: const Text('Disconnect'),
+                  ),
+                if (_isConfigured)
+                  const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          ],
         ),
-        TextButton(
-          onPressed: _isTesting ? null : _testConnection,
-          child: _isTesting
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Test Connection'),
-        ),
-        if (computedSelectedProvider != null)
-          TextButton(
-            onPressed: _saveConfiguration,
-            child: const Text('Save'),
-          ),
       ],
     );
   }

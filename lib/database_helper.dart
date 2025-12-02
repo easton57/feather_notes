@@ -424,7 +424,8 @@ class DatabaseHelper {
     )).toList();
     final colorValue = data['color'] as int?;
     final color = colorValue != null ? Color(colorValue) : Colors.black;
-    return Stroke(points, color: color);
+    final penSize = (data['penSize'] as num?)?.toDouble() ?? 1.0;
+    return Stroke(points, color: color, penSize: penSize);
   }
 
   String _matrixToJson(Matrix4 matrix) {

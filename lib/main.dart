@@ -183,7 +183,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
           
           // Create a deep copy to avoid reference sharing
           loadedCanvasData[noteId] = NoteCanvasData(
-            strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+            strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
             textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
             matrix: matrix,
             scale: scale,
@@ -315,7 +315,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
       // Create a deep copy to avoid reference sharing between notes
       setState(() {
         _noteCanvasData[noteId] = NoteCanvasData(
-          strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+          strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
           textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
           matrix: matrix,
           scale: scale,
@@ -332,7 +332,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
   Future<void> _saveNoteData(int noteId, NoteCanvasData data) async {
     // Create a deep copy before storing to avoid reference sharing
     final dataCopy = NoteCanvasData(
-      strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList(),
+      strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
       textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
       matrix: Matrix4.copy(data.matrix),
       scale: data.scale,
@@ -565,6 +565,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
                       _noteControllers[noteId] = TextEditingController(text: notes[i]['title'] as String);
                     }
                     return ListTile(
+                      onTap: () {
+                        // Prevent drawer from closing when tapping the list tile during editing
+                      },
                       title: TextField(
                         controller: _noteControllers[noteId],
                         autofocus: true,
@@ -574,6 +577,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                           isDense: true,
                         ),
                         onSubmitted: (value) async {
+                          // Don't close drawer - just save and exit edit mode
                           if (value.trim().isNotEmpty) {
                             await DatabaseHelper.instance.updateNoteTitle(noteId, value.trim());
                             setState(() {
@@ -582,6 +586,8 @@ class _NotesHomePageState extends State<NotesHomePage> {
                               _noteControllers[noteId]?.dispose();
                               _noteControllers.remove(noteId);
                             });
+                            // Reload notes to refresh the list
+                            _loadNotes();
                           } else {
                             setState(() {
                               _editingIndex = null;
@@ -591,6 +597,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                           }
                         },
                         onEditingComplete: () async {
+                          // Don't close drawer - just save and exit edit mode
                           final value = _noteControllers[noteId]?.text.trim() ?? '';
                           if (value.isNotEmpty) {
                             await DatabaseHelper.instance.updateNoteTitle(noteId, value);
@@ -600,6 +607,8 @@ class _NotesHomePageState extends State<NotesHomePage> {
                               _noteControllers[noteId]?.dispose();
                               _noteControllers.remove(noteId);
                             });
+                            // Reload notes to refresh the list
+                            _loadNotes();
                           } else {
                             setState(() {
                               _editingIndex = null;
@@ -608,10 +617,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
                             });
                           }
                         },
+                        onTap: () {
+                          // Prevent drawer from closing when tapping the text field
+                        },
                       ),
                       trailing: IconButton(
                         icon: const Icon(Icons.check),
                         onPressed: () async {
+                          // Don't close drawer - just save and exit edit mode
                           final value = _noteControllers[noteId]?.text.trim() ?? '';
                           if (value.isNotEmpty) {
                             await DatabaseHelper.instance.updateNoteTitle(noteId, value);
@@ -621,6 +634,8 @@ class _NotesHomePageState extends State<NotesHomePage> {
                               _noteControllers[noteId]?.dispose();
                               _noteControllers.remove(noteId);
                             });
+                            // Reload notes to refresh the list
+                            _loadNotes();
                           } else {
                             setState(() {
                               _editingIndex = null;
@@ -647,6 +662,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         : null,
                     selected: i == selectedIndex,
                     onTap: () async {
+                      // Don't close drawer if we're currently editing this note
+                      if (_editingIndex == i) {
+                        return; // Stay in edit mode, don't close drawer
+                      }
                       setState(() {
                         selectedIndex = i;
                       });
@@ -672,9 +691,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         IconButton(
                           icon: const Icon(Icons.edit, size: 20),
                           onPressed: () {
+                            // Prevent drawer from closing when starting to edit
                             setState(() {
                               _editingIndex = i;
                             });
+                            // Keep drawer open by not calling Navigator.pop
                           },
                         ),
                         IconButton(
@@ -910,6 +931,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   // Drawing color
   Color _selectedColor = Colors.black;
   bool _showColorPicker = false;
+  bool _useColorWheel = false; // false = BlockPicker, true = ColorPicker (wheel)
+  
+  // Pen size (base width multiplier, 0.5 to 10.0)
+  double _penSize = 1.0;
   
   // Text mode
   bool _textMode = false;
@@ -939,6 +964,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   
   // Collapsible menu state
   bool _showToolMenu = false;
+  bool _showPenSizeControl = false;
+  
+  // Drawing indicator position
+  Offset? _drawingIndicatorPosition;
   
   @override
   void initState() {
@@ -1051,7 +1080,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       
       
       // Create new lists to avoid reference sharing
-      _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color)).toList();
+      _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList();
       _textElements = data.textElements.map((te) => TextElement(te.position, te.text)).toList();
       _currentStroke = null;
       _undoStack.clear();
@@ -1494,20 +1523,24 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 }
                 
                 final local = _transformToLocal(event.localPosition);
+                final brightness = Theme.of(context).brightness;
+                final isDark = brightness == Brightness.dark;
+                final eraserColor = isDark ? const Color(0xFF121212) : Colors.white;
+                
                 setState(() {
-                  if (_eraserMode) {
-                    _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                    _strokes.removeWhere((s) => s.hitTest(local));
-                    _redoStack.clear();
-                    _saveCurrentData();
-                  } else {
-                    final pressure = isStylus ? event.pressure : 0.5;
-                    _currentStroke = Stroke([Point(local, pressure)], color: _eraserMode ? (isDark ? const Color(0xFF121212) : Colors.white) : _selectedColor);
-                    _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                    _strokes.add(_currentStroke!);
-                    _redoStack.clear();
-                    _saveCurrentData();
-                  }
+                  final pressure = isStylus ? event.pressure : 0.5;
+                  // Eraser uses 2x pen size for easier erasing
+                  final effectivePenSize = _eraserMode ? _penSize * 2.0 : _penSize;
+                  _currentStroke = Stroke(
+                    [Point(local, pressure)], 
+                    color: _eraserMode ? eraserColor : _selectedColor,
+                    penSize: effectivePenSize,
+                  );
+                  _drawingIndicatorPosition = event.localPosition;
+                  _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+                  _strokes.add(_currentStroke!);
+                  _redoStack.clear();
+                  _saveCurrentData();
                 });
               } else if ((isMouse || isTouch) && _textMode) {
                 // Click/tap to place text cursor or edit existing text
@@ -1685,6 +1718,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 // Use a microtask to batch rapid updates slightly without visible delay
                 if (mounted) {
                   setState(() {
+                    _drawingIndicatorPosition = event.localPosition;
                     // Trigger repaint - the point is already added above
                     // Save data periodically during drawing (but not every frame for performance)
                     if (_currentStroke!.points.length % 10 == 0) {
@@ -1712,6 +1746,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 // Always update on pointer up to ensure final point is drawn
                 setState(() {
                   _currentStroke = null;
+                  _drawingIndicatorPosition = null;
                   _saveCurrentData();
                 });
               }
@@ -1766,10 +1801,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: _eraserMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
                   child: IconButton(
-                    icon: Icon(_eraserMode ? Icons.brush : Icons.cleaning_services),
-                    tooltip: 'Eraser',
+                    icon: Icon(_eraserMode ? Icons.cleaning_services : Icons.cleaning_services),
+                    tooltip: _eraserMode ? 'Eraser (Active)' : 'Eraser',
                     onPressed: () => setState(() => _eraserMode = !_eraserMode),
                   ),
                 ),
@@ -1777,10 +1812,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: _textMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
                   child: IconButton(
-                    icon: Icon(_textMode ? Icons.brush : Icons.text_fields),
-                    tooltip: _textMode ? 'Drawing Mode' : 'Text Mode',
+                    icon: Icon(_textMode ? Icons.text_fields : Icons.text_fields),
+                    tooltip: _textMode ? 'Text Mode (Active)' : 'Text Mode',
                     onPressed: () => setState(() {
                       _textMode = !_textMode;
                       if (!_textMode) {
@@ -1798,13 +1833,78 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: _showColorPicker ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
                   child: IconButton(
                     icon: const Icon(Icons.palette),
-                    tooltip: 'Color Picker',
+                    tooltip: _showColorPicker ? 'Color Picker (Open)' : 'Color Picker',
                     onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
                   ),
                 ),
+                const SizedBox(height: 8),
+                // Pen size control button
+                Material(
+                  elevation: 4,
+                  borderRadius: BorderRadius.circular(8),
+                  color: _showPenSizeControl ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                  child: IconButton(
+                    icon: const Icon(Icons.edit),
+                    tooltip: _showPenSizeControl ? 'Hide Pen Size' : 'Show Pen Size',
+                    onPressed: () => setState(() => _showPenSizeControl = !_showPenSizeControl),
+                  ),
+                ),
+                // Collapsible pen size control
+                if (_showPenSizeControl) ...[
+                  const SizedBox(height: 8),
+                  Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: Colors.grey[700],
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      width: 200,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.edit, size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Pen Size: ${_penSize.toStringAsFixed(1)}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
+                          if (_eraserMode) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              'Eraser Size: ${(_penSize * 2.0).toStringAsFixed(1)}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Theme.of(context).colorScheme.primary,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 4),
+                          Slider(
+                            value: _penSize,
+                            min: 0.5,
+                            max: 10.0,
+                            divisions: 95,
+                            label: _penSize.toStringAsFixed(1),
+                            onChanged: (value) {
+                              setState(() {
+                                _penSize = value;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ],
           ),
@@ -1814,11 +1914,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           Positioned(
             top: MediaQuery.of(context).padding.top + 16,
             right: 80,
-            child: Material(
-              elevation: 8,
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.all(16),
+            child: SizedBox(
+              width: 374,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                  width: 350,
+                  constraints: const BoxConstraints(
+                    maxWidth: 350,
+                    minWidth: 350,
+                  ),
+                  padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Theme.of(context).scaffoldBackgroundColor,
                   borderRadius: BorderRadius.circular(8),
@@ -1827,27 +1934,107 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    BlockPicker(
-                      pickerColor: _selectedColor,
-                      onColorChanged: (color) {
-                        setState(() {
-                          _selectedColor = color;
-                        });
-                      },
+                    // Tab selector for picker type
+                    SizedBox(
+                      width: 350,
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextButton.icon(
+                              icon: const Icon(Icons.grid_view, size: 18),
+                              label: const Text('Presets'),
+                              onPressed: () => setState(() => _useColorWheel = false),
+                              style: TextButton.styleFrom(
+                                backgroundColor: !_useColorWheel
+                                    ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                    : null,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextButton.icon(
+                              icon: const Icon(Icons.color_lens, size: 18),
+                              label: const Text('Custom'),
+                              onPressed: () => setState(() => _useColorWheel = true),
+                              style: TextButton.styleFrom(
+                                backgroundColor: _useColorWheel
+                                    ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+                    // Color picker widget (BlockPicker or ColorPicker)
+                    _useColorWheel
+                        ? MediaQuery(
+                            // Override MediaQuery to give ColorPicker a fixed width context
+                            // This prevents it from reacting to window width changes
+                            data: MediaQuery.of(context).copyWith(
+                              size: const Size(350, 600),
+                            ),
+                            child: ClipRect(
+                              child: SizedBox(
+                                width: 350,
+                                child: ColorPicker(
+                                  pickerColor: _selectedColor,
+                                  onColorChanged: (color) {
+                                    setState(() {
+                                      _selectedColor = color;
+                                    });
+                                  },
+                                  enableAlpha: false,
+                                  displayThumbColor: true,
+                                  paletteType: PaletteType.hslWithSaturation,
+                                  pickerAreaHeightPercent: 0.6,
+                                ),
+                              ),
+                            ),
+                          )
+                        : MediaQuery(
+                            // Override MediaQuery to give BlockPicker a fixed width context
+                            // This prevents it from reacting to window width changes
+                            data: MediaQuery.of(context).copyWith(
+                              size: const Size(350, 600),
+                            ),
+                            child: ClipRect(
+                              child: SizedBox(
+                                width: 350,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  widthFactor: 1.0,
+                                  child: BlockPicker(
+                                    pickerColor: _selectedColor,
+                                    onColorChanged: (color) {
+                                      setState(() {
+                                        _selectedColor = color;
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                     const SizedBox(height: 8),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        TextButton(
-                          onPressed: () => setState(() => _showColorPicker = false),
-                          child: const Text('Done'),
-                        ),
-                      ],
+                    SizedBox(
+                      width: 350,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton.icon(
+                            icon: const Icon(Icons.check, size: 18),
+                            label: const Text('Done'),
+                            onPressed: () => setState(() => _showColorPicker = false),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
               ),
+            ),
             ),
           ),
         // Font size adjuster (shown when in text mode and menu is open)
@@ -1869,9 +2056,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Font Size: ${_textFontSize.toInt()}',
-                      style: Theme.of(context).textTheme.titleSmall,
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.format_size, size: 20),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Font Size: ${_textFontSize.toInt()}',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     Slider(
@@ -1972,6 +2166,28 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                 },
                 child: Container(color: Colors.transparent),
+              ),
+            ),
+          ),
+        // Drawing indicator circle
+        if (_drawingIndicatorPosition != null && _currentStroke != null)
+          Positioned(
+            left: _drawingIndicatorPosition!.dx - (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
+            top: _drawingIndicatorPosition!.dy - (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
+            child: IgnorePointer(
+              child: Container(
+                width: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(4.0, 50.0),
+                height: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(4.0, 50.0),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: _eraserMode 
+                        ? Theme.of(context).colorScheme.error.withOpacity(0.8)
+                        : _selectedColor.withOpacity(0.8),
+                    width: 2,
+                  ),
+                  color: Colors.transparent,
+                ),
               ),
             ),
           ),
@@ -2093,7 +2309,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               final minimapSize = Size(minimapWidth, minimapHeight);
               
               return Positioned(
-                bottom: padding.bottom + 16,
+                bottom: padding.bottom + 48, // Increased to 48 to better avoid gesture bar on Android
                 right: 16,
                 child: _MinimapWidget(
                   size: minimapSize,
@@ -2244,7 +2460,10 @@ class Point {
 class Stroke {
   final List<Point> points;
   final Color color;
-  Stroke(this.points, {Color? color}) : color = color ?? Colors.black;
+  final double penSize;
+  Stroke(this.points, {Color? color, double? penSize}) 
+      : color = color ?? Colors.black,
+        penSize = penSize ?? 1.0;
 
   bool hitTest(Offset pos) {
     for (final p in points) {
@@ -2261,6 +2480,7 @@ class Stroke {
         'pressure': p.pressure,
       }).toList(),
       'color': color.value,
+      'penSize': penSize,
     };
   }
 
@@ -2272,7 +2492,8 @@ class Stroke {
     )).toList();
     final colorValue = json['color'] as int?;
     final color = colorValue != null ? Color(colorValue) : Colors.black;
-    return Stroke(points, color: color);
+    final penSize = (json['penSize'] as num?)?.toDouble() ?? 1.0;
+    return Stroke(points, color: color, penSize: penSize);
   }
 }
 
@@ -2488,7 +2709,9 @@ class _CanvasPainter extends CustomPainter {
         final dotPaint = Paint()
           ..color = strokeColor
           ..style = PaintingStyle.fill;
-        final radius = 1.0 + point.pressure * 2.0;
+        // Use penSize as base, then apply pressure variation
+        final baseRadius = stroke.penSize * 0.5;
+        final radius = baseRadius + point.pressure * baseRadius;
         canvas.drawCircle(point.position, radius, dotPaint);
         continue;
       }
@@ -2529,7 +2752,9 @@ class _CanvasPainter extends CustomPainter {
       for (final p in points) {
         totalPressure += p.pressure;
       }
-      paint.strokeWidth = 1.0 + (totalPressure / points.length) * 3.0;
+      // Use penSize as base multiplier, then apply pressure variation
+      final baseWidth = stroke.penSize;
+      paint.strokeWidth = baseWidth + (totalPressure / points.length) * (baseWidth * 2.0);
       canvas.drawPath(path, paint);
     }
     

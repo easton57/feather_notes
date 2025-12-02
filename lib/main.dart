@@ -1911,33 +1911,44 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         ),
         // Color picker overlay
         if (_showColorPicker)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 16,
-            right: 80,
-            child: SizedBox(
-              width: 374,
-              child: Material(
-                elevation: 8,
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  width: 350,
-                  constraints: const BoxConstraints(
-                    maxWidth: 350,
-                    minWidth: 350,
-                  ),
-                  padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).scaffoldBackgroundColor,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Tab selector for picker type
-                    SizedBox(
-                      width: 350,
-                      child: Row(
+          Builder(
+            builder: (context) {
+              final screenSize = MediaQuery.of(context).size;
+              final isMobile = Platform.isAndroid || Platform.isIOS || screenSize.width < 600;
+              
+              // Adjust size and position for mobile
+              final pickerWidth = isMobile ? 280.0 : 350.0;
+              final pickerPadding = isMobile ? 8.0 : 12.0;
+              final containerWidth = pickerWidth + (pickerPadding * 2);
+              
+              return Positioned(
+                top: MediaQuery.of(context).padding.top + (isMobile ? 80 : 16),
+                right: isMobile ? 8 : 80,
+                left: isMobile ? 8 : null,
+                child: SizedBox(
+                  width: containerWidth,
+                  child: Material(
+                    elevation: 8,
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      width: pickerWidth,
+                      constraints: BoxConstraints(
+                        maxWidth: pickerWidth,
+                        minWidth: pickerWidth,
+                      ),
+                      padding: EdgeInsets.all(pickerPadding),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).scaffoldBackgroundColor,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // Tab selector for picker type
+                        SizedBox(
+                          width: pickerWidth,
+                          child: Row(
                         children: [
                           Expanded(
                             child: TextButton.icon(
@@ -1967,60 +1978,60 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         ],
                       ),
                     ),
-                    // Color picker widget (BlockPicker or ColorPicker)
-                    _useColorWheel
-                        ? MediaQuery(
-                            // Override MediaQuery to give ColorPicker a fixed width context
-                            // This prevents it from reacting to window width changes
-                            data: MediaQuery.of(context).copyWith(
-                              size: const Size(350, 600),
-                            ),
-                            child: ClipRect(
-                              child: SizedBox(
-                                width: 350,
-                                child: ColorPicker(
-                                  pickerColor: _selectedColor,
-                                  onColorChanged: (color) {
-                                    setState(() {
-                                      _selectedColor = color;
-                                    });
-                                  },
-                                  enableAlpha: false,
-                                  displayThumbColor: true,
-                                  paletteType: PaletteType.hslWithSaturation,
-                                  pickerAreaHeightPercent: 0.6,
+                        // Color picker widget (BlockPicker or ColorPicker)
+                        _useColorWheel
+                            ? MediaQuery(
+                                // Override MediaQuery to give ColorPicker a fixed width context
+                                // This prevents it from reacting to window width changes
+                                data: MediaQuery.of(context).copyWith(
+                                  size: Size(pickerWidth, isMobile ? 400 : 600),
                                 ),
-                              ),
-                            ),
-                          )
-                        : MediaQuery(
-                            // Override MediaQuery to give BlockPicker a fixed width context
-                            // This prevents it from reacting to window width changes
-                            data: MediaQuery.of(context).copyWith(
-                              size: const Size(350, 600),
-                            ),
-                            child: ClipRect(
-                              child: SizedBox(
-                                width: 350,
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  widthFactor: 1.0,
-                                  child: BlockPicker(
-                                    pickerColor: _selectedColor,
-                                    onColorChanged: (color) {
-                                      setState(() {
-                                        _selectedColor = color;
-                                      });
-                                    },
+                                child: ClipRect(
+                                  child: SizedBox(
+                                    width: pickerWidth,
+                                    child: ColorPicker(
+                                      pickerColor: _selectedColor,
+                                      onColorChanged: (color) {
+                                        setState(() {
+                                          _selectedColor = color;
+                                        });
+                                      },
+                                      enableAlpha: false,
+                                      displayThumbColor: true,
+                                      paletteType: PaletteType.hslWithSaturation,
+                                      pickerAreaHeightPercent: isMobile ? 0.5 : 0.6,
+                                    ),
+                                  ),
+                                ),
+                              )
+                            : MediaQuery(
+                                // Override MediaQuery to give BlockPicker a fixed width context
+                                // This prevents it from reacting to window width changes
+                                data: MediaQuery.of(context).copyWith(
+                                  size: Size(pickerWidth, isMobile ? 400 : 600),
+                                ),
+                                child: ClipRect(
+                                  child: SizedBox(
+                                    width: pickerWidth,
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      widthFactor: 1.0,
+                                      child: BlockPicker(
+                                        pickerColor: _selectedColor,
+                                        onColorChanged: (color) {
+                                          setState(() {
+                                            _selectedColor = color;
+                                          });
+                                        },
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: 350,
-                      child: Row(
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          width: pickerWidth,
+                          child: Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
                           TextButton.icon(
@@ -2036,6 +2047,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               ),
             ),
             ),
+          );
+            },
           ),
         // Font size adjuster (shown when in text mode and menu is open)
         if (_textMode && _showToolMenu)

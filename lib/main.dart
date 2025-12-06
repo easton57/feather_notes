@@ -391,6 +391,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
           : null,
       selected: i == selectedIndex,
       onTap: () async {
+        // Save current note's data before switching
+        if (selectedIndex >= 0 && selectedIndex < notes.length) {
+          final currentNoteId = notes[selectedIndex]['id'] as int;
+          final currentCanvasData = _noteCanvasData[currentNoteId];
+          if (currentCanvasData != null) {
+            // Force save current note's canvas data before switching
+            await _saveNoteData(currentNoteId, currentCanvasData);
+          }
+        }
+        
         setState(() {
           selectedIndex = i;
         });
@@ -960,13 +970,43 @@ class _NotesHomePageState extends State<NotesHomePage> {
       matrix: Matrix4.copy(data.matrix),
       scale: data.scale,
     );
+    
     // Only update if data actually changed to prevent unnecessary rebuilds
     final existingData = _noteCanvasData[noteId];
-    if (existingData == null || 
-        existingData.strokes.length != dataCopy.strokes.length ||
-        existingData.textElements.length != dataCopy.textElements.length ||
-        existingData.matrix != dataCopy.matrix ||
-        existingData.scale != dataCopy.scale) {
+    
+    // Check if data has changed - need to check stroke contents, not just length
+    // because strokes are added to the list at the start and then modified
+    bool hasChanged = existingData == null;
+    
+    if (!hasChanged) {
+      // Check lengths first (quick check)
+      if (existingData.strokes.length != dataCopy.strokes.length ||
+          existingData.textElements.length != dataCopy.textElements.length ||
+          existingData.matrix != dataCopy.matrix ||
+          existingData.scale != dataCopy.scale) {
+        hasChanged = true;
+      } else {
+        // Check if any stroke has changed (points count or content)
+        // This is critical because strokes are added to the list at the start,
+        // then points are added during drawing, so length doesn't change but content does
+        for (int i = 0; i < dataCopy.strokes.length; i++) {
+          if (i >= existingData.strokes.length) {
+            hasChanged = true;
+            break;
+          }
+          final existingStroke = existingData.strokes[i];
+          final newStroke = dataCopy.strokes[i];
+          if (existingStroke.points.length != newStroke.points.length ||
+              existingStroke.color != newStroke.color ||
+              existingStroke.penSize != newStroke.penSize) {
+            hasChanged = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    if (hasChanged) {
       _noteCanvasData[noteId] = dataCopy;
       await DatabaseHelper.instance.saveCanvasData(noteId, dataCopy);
     }
@@ -2245,13 +2285,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 return;
               }
               
-              if (_activeTextElement == null) {
+              if (_activeTextElement == null && _currentStroke != null) {
                 // Always update on pointer up to ensure final point is drawn
+                // For short strokes, ensure we save even if comparison might fail
                 setState(() {
                   _currentStroke = null;
                   _drawingIndicatorPosition = null;
-                  _saveCurrentData();
                 });
+                // Force save after setState to ensure the stroke is complete
+                // This is critical for short strokes that might not trigger periodic saves
+                _saveCurrentData();
               }
             },
             behavior: HitTestBehavior.translucent, // Allow events to pass through to GestureDetector below

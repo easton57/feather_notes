@@ -129,6 +129,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
   // GlobalKey to preserve InfiniteCanvas state across rebuilds
   final Map<int, GlobalKey> _canvasKeys = {};
   
+  // Text-only mode state (per note)
+  final Map<int, bool> _textOnlyMode = {};
+  final Map<int, TextEditingController> _textContentControllers = {};
+  
   // Search and filter state
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -144,6 +148,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
   
   // Sync manager for cloud sync operations
   final SyncManager _syncManager = SyncManager();
+  
+  // Track if this is the initial load
+  bool _isInitialLoad = true;
 
   @override
   void initState() {
@@ -179,6 +186,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
           'title': n['title'] as String,
           'tags': noteTags,
           'folder_id': folderId,
+          'modified_at': n['modified_at'] as int,
         });
         
         // Load canvas data for each note to ensure correct alignment
@@ -230,9 +238,26 @@ class _NotesHomePageState extends State<NotesHomePage> {
         _noteCanvasData.clear();
         _noteCanvasData.addAll(loadedCanvasData);
         _availableTags = tags;
-        // Only reset selectedIndex if current selection is invalid
-        if (selectedIndex >= notes.length || selectedIndex < 0) {
-          selectedIndex = notes.isNotEmpty ? 0 : -1;
+        
+        // On initial load with no filters, select the most recently edited note
+        if (_isInitialLoad && _searchQuery.isEmpty && _selectedTags.isEmpty && notes.isNotEmpty) {
+          // Find the note with the highest modified_at timestamp
+          int mostRecentIndex = 0;
+          int mostRecentModified = 0;
+          for (int i = 0; i < notes.length; i++) {
+            final modifiedAt = notes[i]['modified_at'] as int? ?? 0;
+            if (modifiedAt > mostRecentModified) {
+              mostRecentModified = modifiedAt;
+              mostRecentIndex = i;
+            }
+          }
+          selectedIndex = mostRecentIndex;
+          _isInitialLoad = false;
+        } else {
+          // Only reset selectedIndex if current selection is invalid
+          if (selectedIndex >= notes.length || selectedIndex < 0) {
+            selectedIndex = notes.isNotEmpty ? 0 : -1;
+          }
         }
         _isLoading = false;
       });
@@ -290,72 +315,55 @@ class _NotesHomePageState extends State<NotesHomePage> {
           final folderNotes = notesByFolder[folderId] ?? [];
           final isExpanded = _expandedFolders.contains(folderId);
           
-          return ExpansionTile(
-            title: Row(
-              children: [
-                const Icon(Icons.folder, size: 20),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(folder['name'] as String),
-                ),
-              ],
-            ),
-            initiallyExpanded: isExpanded,
-            onExpansionChanged: (expanded) {
-              // Prevent drawer from closing when expanding/collapsing folders
-              setState(() {
-                if (expanded) {
-                  _expandedFolders.add(folderId);
-                } else {
-                  _expandedFolders.remove(folderId);
-                }
-              });
+          return GestureDetector(
+            onLongPressStart: (details) {
+              _showFolderContextMenu(context, folderId, folder['name'] as String, details.globalPosition);
             },
-            // Prevent the tile from closing the drawer
-            tilePadding: const EdgeInsets.symmetric(horizontal: 16.0),
-            childrenPadding: EdgeInsets.zero,
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.edit, size: 18),
-                  tooltip: 'Edit Folder Name',
-                  onPressed: () {
-                    _showEditFolderDialog(context, folderId, folder['name'] as String);
-                  },
-                ),
-                IconButton(
-                  icon: const Icon(Icons.delete, size: 18),
-                  color: Colors.red,
-                  onPressed: () => _deleteFolder(context, folderId),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.add, size: 18),
-                  tooltip: 'Add Note to Folder',
-                  onPressed: () => _showCreateNoteDialog(context, folderId),
-                ),
-              ],
-            ),
-            children: folderNotes.isEmpty
-                ? [
-                    Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Text(
-                        'No notes in this folder',
-                        style: TextStyle(
-                          color: Colors.grey[600],
-                          fontStyle: FontStyle.italic,
+            child: ExpansionTile(
+              title: Row(
+                children: [
+                  const Icon(Icons.folder, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(folder['name'] as String),
+                  ),
+                ],
+              ),
+              initiallyExpanded: isExpanded,
+              onExpansionChanged: (expanded) {
+                // Prevent drawer from closing when expanding/collapsing folders
+                setState(() {
+                  if (expanded) {
+                    _expandedFolders.add(folderId);
+                  } else {
+                    _expandedFolders.remove(folderId);
+                  }
+                });
+              },
+              // Prevent the tile from closing the drawer
+              tilePadding: const EdgeInsets.symmetric(horizontal: 16.0),
+              childrenPadding: EdgeInsets.zero,
+              children: folderNotes.isEmpty
+                  ? [
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Text(
+                          'No notes in this folder',
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontStyle: FontStyle.italic,
+                          ),
                         ),
                       ),
-                    ),
-                  ]
-                : folderNotes.map((note) {
-                    final i = notes.indexWhere((n) => n['id'] == note['id']);
-                    return Padding(
-                      padding: const EdgeInsets.only(left: 16.0),
-                      child: _buildNoteTile(i, note),
-                    );
-                  }).toList(),
+                    ]
+                  : folderNotes.map((note) {
+                      final i = notes.indexWhere((n) => n['id'] == note['id']);
+                      return Padding(
+                        padding: const EdgeInsets.only(left: 16.0),
+                        child: _buildNoteTile(i, note),
+                      );
+                    }).toList(),
+            ),
           );
         }),
         
@@ -376,71 +384,186 @@ class _NotesHomePageState extends State<NotesHomePage> {
     final noteId = note['id'] as int;
     final noteTags = note['tags'] as List<String>? ?? [];
     
-    return ListTile(
-      title: Text(note['title'] as String),
-      subtitle: noteTags.isNotEmpty
-          ? Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: noteTags.map((tag) => Chip(
-                label: Text(tag, style: const TextStyle(fontSize: 10)),
-                padding: EdgeInsets.zero,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              )).toList(),
-            )
-          : null,
-      selected: i == selectedIndex,
-      onTap: () async {
-        // Save current note's data before switching
-        if (selectedIndex >= 0 && selectedIndex < notes.length) {
-          final currentNoteId = notes[selectedIndex]['id'] as int;
-          final currentCanvasData = _noteCanvasData[currentNoteId];
-          if (currentCanvasData != null) {
-            // Force save current note's canvas data before switching
-            await _saveNoteData(currentNoteId, currentCanvasData);
+    return GestureDetector(
+      onLongPressStart: (details) {
+        _showNoteContextMenu(
+          context,
+          i,
+          noteId,
+          note['title'] as String,
+          noteTags,
+          note['folder_id'] as int?,
+          details.globalPosition,
+        );
+      },
+      child: ListTile(
+        title: Text(note['title'] as String),
+        subtitle: noteTags.isNotEmpty
+            ? Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                children: noteTags.map((tag) => Chip(
+                  label: Text(tag, style: const TextStyle(fontSize: 10)),
+                  padding: EdgeInsets.zero,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                )).toList(),
+              )
+            : null,
+        selected: i == selectedIndex,
+        onTap: () async {
+          // Save current note's data before switching
+          if (selectedIndex >= 0 && selectedIndex < notes.length) {
+            final currentNoteId = notes[selectedIndex]['id'] as int;
+            final currentCanvasData = _noteCanvasData[currentNoteId];
+            if (currentCanvasData != null) {
+              // Force save current note's canvas data before switching
+              await _saveNoteData(currentNoteId, currentCanvasData);
+            }
           }
-        }
-        
-        setState(() {
-          selectedIndex = i;
-        });
-        // Ensure we load the correct note data before switching
-        await _loadNoteData(noteId);
-        if (context.mounted) {
-          Navigator.pop(context);
-        }
-      },
-      onLongPress: () {
-        // Show edit dialog on long press
-        _showEditNoteDialog(context, noteId, note['title'] as String);
-      },
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.label_outline, size: 20),
-            tooltip: 'Edit Tags',
-            onPressed: () => _showTagEditor(context, noteId, noteTags),
-          ),
-          IconButton(
-            icon: const Icon(Icons.folder_outlined, size: 20),
-            tooltip: 'Move to Folder',
-            onPressed: () => _showMoveToFolderDialog(context, noteId, note['folder_id'] as int?),
-          ),
-          IconButton(
-            icon: const Icon(Icons.edit, size: 20),
-            tooltip: 'Edit Name',
-            onPressed: () {
-              _showEditNoteDialog(context, noteId, note['title'] as String);
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete, size: 20),
-            color: Colors.red,
-            onPressed: () => _deleteNote(context, i, noteId),
-          ),
-        ],
+          
+          setState(() {
+            selectedIndex = i;
+          });
+          // Ensure we load the correct note data before switching
+          await _loadNoteData(noteId);
+          if (context.mounted) {
+            Navigator.pop(context);
+          }
+        },
       ),
+    );
+  }
+
+  void _showNoteContextMenu(BuildContext context, int index, int noteId, String noteTitle, List<String> noteTags, int? folderId, Offset tapPosition) {
+    final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    
+    if (overlay == null) return;
+    
+    showMenu(
+      context: context,
+      useRootNavigator: false,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(tapPosition.dx, tapPosition.dy, 0, 0),
+        Rect.fromLTWH(0, 0, overlay.size.width, overlay.size.height),
+      ),
+      items: [
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.label_outline, size: 20),
+              SizedBox(width: 8),
+              Text('Edit Tags'),
+            ],
+          ),
+          onTap: () {
+            // Use a post-frame callback to ensure the menu is closed before showing the dialog
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _showTagEditor(context, noteId, noteTags);
+            });
+          },
+        ),
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.folder_outlined, size: 20),
+              SizedBox(width: 8),
+              Text('Move to Folder'),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _showMoveToFolderDialog(context, noteId, folderId);
+            });
+          },
+        ),
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.edit, size: 20),
+              SizedBox(width: 8),
+              Text('Rename'),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _showEditNoteDialog(context, noteId, noteTitle);
+            });
+          },
+        ),
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.delete, size: 20, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Delete', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _deleteNote(context, index, noteId);
+            });
+          },
+        ),
+      ],
+    );
+  }
+
+  void _showFolderContextMenu(BuildContext context, int folderId, String folderName, Offset tapPosition) {
+    final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    
+    if (overlay == null) return;
+    
+    showMenu(
+      context: context,
+      useRootNavigator: false,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(tapPosition.dx, tapPosition.dy, 0, 0),
+        Rect.fromLTWH(0, 0, overlay.size.width, overlay.size.height),
+      ),
+      items: [
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.add, size: 20),
+              SizedBox(width: 8),
+              Text('Add Note to Folder'),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _showCreateNoteDialog(context, folderId);
+            });
+          },
+        ),
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.edit, size: 20),
+              SizedBox(width: 8),
+              Text('Rename'),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _showEditFolderDialog(context, folderId, folderName);
+            });
+          },
+        ),
+        PopupMenuItem(
+          child: const Row(
+            children: [
+              Icon(Icons.delete, size: 20, color: Colors.red),
+              SizedBox(width: 8),
+              Text('Delete', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+          onTap: () {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _deleteFolder(context, folderId);
+            });
+          },
+        ),
+      ],
     );
   }
 
@@ -926,6 +1049,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
     }
   }
 
+  Future<void> _loadTextContent(int noteId) async {
+    final textContent = await DatabaseHelper.instance.getTextContent(noteId);
+    if (_textContentControllers.containsKey(noteId)) {
+      _textContentControllers[noteId]!.text = textContent ?? '';
+    }
+  }
+
   Future<void> _loadNoteData(int noteId) async {
     // Always reload from database to ensure we have the latest data and correct alignment
     try {
@@ -1274,20 +1404,37 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   : (selectedIndex >= 0 && selectedIndex < notes.length
                       ? () {
                           final noteId = notes[selectedIndex]['id'] as int;
-                          // Get or create a GlobalKey for this note's canvas to preserve state
-                          if (!_canvasKeys.containsKey(noteId)) {
-                            _canvasKeys[noteId] = GlobalKey();
+                          final isTextOnly = _textOnlyMode[noteId] ?? false;
+                          
+                          if (isTextOnly) {
+                            // Initialize text content controller if needed
+                            if (!_textContentControllers.containsKey(noteId)) {
+                              _textContentControllers[noteId] = TextEditingController();
+                              _loadTextContent(noteId);
+                            }
+                            return TextEditorView(
+                              noteId: noteId,
+                              controller: _textContentControllers[noteId]!,
+                              onTextChanged: (text) async {
+                                await DatabaseHelper.instance.saveTextContent(noteId, text);
+                              },
+                            );
+                          } else {
+                            // Get or create a GlobalKey for this note's canvas to preserve state
+                            if (!_canvasKeys.containsKey(noteId)) {
+                              _canvasKeys[noteId] = GlobalKey();
+                            }
+                            return InfiniteCanvas(
+                              key: _canvasKeys[noteId],
+                              noteId: noteId,
+                              initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
+                              onDataChanged: (data) async {
+                                if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                                  await _saveNoteData(noteId, data);
+                                }
+                              },
+                            );
                           }
-                          return InfiniteCanvas(
-                            key: _canvasKeys[noteId],
-                            noteId: noteId,
-                            initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
-                            onDataChanged: (data) async {
-                              if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                                await _saveNoteData(noteId, data);
-                              }
-                            },
-                          );
                         }()
                       : const Center(child: Text('No note selected')))),
           // Floating buttons and title
@@ -1347,6 +1494,50 @@ class _NotesHomePageState extends State<NotesHomePage> {
                     },
                   ),
                 ),
+                const SizedBox(width: 8),
+                // Top-level Text-only mode toggle (per note)
+                if (selectedIndex >= 0 && selectedIndex < notes.length)
+                  Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
+                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                        : Colors.grey[700],
+                    child: IconButton(
+                      icon: Icon(
+                        (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
+                            ? Icons.article
+                            : Icons.edit_note,
+                      ),
+                      tooltip: (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
+                          ? 'Switch to Canvas Mode'
+                          : 'Switch to Text Only Mode',
+                      onPressed: () async {
+                        if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                          final noteId = notes[selectedIndex]['id'] as int;
+                          final currentMode = _textOnlyMode[noteId] ?? false;
+
+                          // If leaving text-only mode, persist latest text content
+                          if (currentMode && _textContentControllers.containsKey(noteId)) {
+                            await DatabaseHelper.instance.saveTextContent(
+                              noteId,
+                              _textContentControllers[noteId]!.text,
+                            );
+                          }
+
+                          setState(() {
+                            _textOnlyMode[noteId] = !currentMode;
+
+                            // When entering text-only mode, ensure controller and content are loaded
+                            if (!currentMode && !_textContentControllers.containsKey(noteId)) {
+                              _textContentControllers[noteId] = TextEditingController();
+                              _loadTextContent(noteId);
+                            }
+                          });
+                        }
+                      },
+                    ),
+                  ),
                 const SizedBox(width: 8),
                 // Note title with same background and height as buttons
                 Material(
@@ -1434,8 +1625,138 @@ class _NotesHomePageState extends State<NotesHomePage> {
       controller.dispose();
     }
     _noteControllers.clear();
+    for (final controller in _textContentControllers.values) {
+      controller.dispose();
+    }
+    _textContentControllers.clear();
     _searchController.dispose();
     super.dispose();
+  }
+}
+
+class TextEditorView extends StatefulWidget {
+  final int noteId;
+  final TextEditingController controller;
+  final Function(String) onTextChanged;
+  
+  const TextEditorView({
+    super.key,
+    required this.noteId,
+    required this.controller,
+    required this.onTextChanged,
+  });
+
+  @override
+  State<TextEditorView> createState() => _TextEditorViewState();
+}
+
+class _TextEditorViewState extends State<TextEditorView> {
+  Timer? _debounceTimer;
+  bool _previewMode = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+  }
+  
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    widget.controller.removeListener(_onTextChanged);
+    super.dispose();
+  }
+  
+  void _onTextChanged() {
+    // Debounce saves to avoid too frequent database writes
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      widget.onTextChanged(widget.controller.text);
+    });
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    final brightness = Theme.of(context).brightness;
+    final isDark = brightness == Brightness.dark;
+    final textColor = isDark ? Colors.white : Colors.black;
+    
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Container(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            padding: EdgeInsets.all(16.0).copyWith(
+              top: MediaQuery.of(context).padding.top + 80,
+              bottom: MediaQuery.of(context).padding.bottom + 16,
+            ),
+            child: _previewMode
+                ? SingleChildScrollView(
+                    child: SelectableText.rich(
+                      _markdownToTextSpan(
+                        widget.controller.text,
+                        textColor,
+                        baseFontSize: Theme.of(context).textTheme.bodyLarge?.fontSize ?? 16.0,
+                      ),
+                    ),
+                  )
+                : TextField(
+                    controller: widget.controller,
+                    autofocus: true,
+                    maxLines: null,
+                    expands: true,
+                    textAlignVertical: TextAlignVertical.top,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                    decoration: InputDecoration(
+                      border: InputBorder.none,
+                      hintText: 'Start typing... (Markdown supported)',
+                      hintStyle: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
+                      ),
+                    ),
+                  ),
+          ),
+        ),
+        // Preview toggle button - show preview button when editing, back button when previewing
+        if (!_previewMode)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 16,
+            right: 16,
+            child: IconButton(
+              icon: const Icon(Icons.preview),
+              tooltip: 'Preview Mode',
+              style: IconButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.surface,
+                foregroundColor: Theme.of(context).colorScheme.onSurface,
+              ),
+              onPressed: () {
+                setState(() {
+                  _previewMode = true;
+                });
+              },
+            ),
+          ),
+        // Back button when in preview mode
+        if (_previewMode)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 16,
+            right: 16,
+            child: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Back to Edit',
+              style: IconButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.surface,
+                foregroundColor: Theme.of(context).colorScheme.onSurface,
+              ),
+              onPressed: () {
+                setState(() {
+                  _previewMode = false;
+                });
+              },
+            ),
+          ),
+      ],
+    );
   }
 }
 
@@ -1481,6 +1802,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   
   // Text mode
   bool _textMode = false;
+  // When enabled, hide all drawings and treat the canvas as text-only
+  bool _textOnlyMode = false;
   TextElement? _activeTextElement;
   int? _editingTextElementIndex; // Index of text element being edited, null if creating new
   final FocusNode _textFocusNode = FocusNode();
@@ -1970,20 +2293,21 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             },
             onScaleEnd: (_) => _scale = 1.0,
             child: Transform(
-                key: ValueKey('transform_${_matrix.getTranslation()}'),
-                transform: _matrix,
-                child: CustomPaint(
-                  // Key includes note ID and current stroke point count to force repaint during drawing
-                  key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}'),
-                  painter: _CanvasPainter(
-                    _strokes, // Pass direct reference so changes are immediately visible
-                    _textElements,
-                    isDark,
-                    _textFontSize,
-                  ),
-                  child: SizedBox(width: 20000, height: 20000),
+              key: ValueKey('transform_${_matrix.getTranslation()}'),
+              transform: _matrix,
+              child: CustomPaint(
+                // Key includes note ID and current stroke point count to force repaint during drawing
+                key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}_${_textOnlyMode ? 'textOnly' : 'full'}'),
+                painter: _CanvasPainter(
+                  // In text-only mode, don't render any strokes
+                  _textOnlyMode ? const <Stroke>[] : _strokes,
+                  _textElements,
+                  isDark,
+                  _textFontSize,
                 ),
+                child: const SizedBox(width: 20000, height: 20000),
               ),
+            ),
             ),
           ),
         Positioned.fill(
@@ -2053,7 +2377,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               }
               
               // Allow touch drawing on Android - only pan with two fingers or long press
-              if (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode)) {
+              // In text-only mode, disable all drawing and only allow text interactions below
+              if (!_textOnlyMode && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
                 // Double-check we're not panning (buttons might not have been set on down)
                 if (isMouse && event.buttons == 2) {
                   setState(() {
@@ -2085,7 +2410,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   _redoStack.clear();
                   _saveCurrentData();
                 });
-              } else if ((isMouse || isTouch) && _textMode) {
+              } else if ((isMouse || isTouch) && (_textMode || _textOnlyMode)) {
                 // Click/tap to place text cursor or edit existing text
                 final local = _transformToLocal(event.localPosition);
                 
@@ -2251,7 +2576,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 return;
               }
               
-              if (_currentStroke != null && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
+              if (!_textOnlyMode && _currentStroke != null && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
                 final local = _transformToLocal(event.localPosition);
                 final pressure = isStylus ? event.pressure : 0.5;
                 // Add point and immediately trigger repaint for real-time drawing
@@ -2344,25 +2669,30 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Material(
-                  elevation: 4,
-                  borderRadius: BorderRadius.circular(8),
-                  color: _eraserMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
-                  child: IconButton(
-                    icon: Icon(_eraserMode ? Icons.cleaning_services : Icons.cleaning_services),
-                    tooltip: _eraserMode ? 'Eraser (Active)' : 'Eraser',
-                    onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                if (!_textOnlyMode) ...[
+                  Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: _eraserMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    child: IconButton(
+                      icon: const Icon(Icons.cleaning_services),
+                      tooltip: _eraserMode ? 'Eraser (Active)' : 'Eraser',
+                      onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
+                  const SizedBox(height: 8),
+                ],
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: _textMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                  color: _textMode && !_textOnlyMode
+                      ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                      : Colors.grey[700],
                   child: IconButton(
-                    icon: Icon(_textMode ? Icons.text_fields : Icons.text_fields),
-                    tooltip: _textMode ? 'Text Mode (Active)' : 'Text Mode',
+                    icon: const Icon(Icons.text_fields),
+                    tooltip: _textMode && !_textOnlyMode ? 'Text Mode (Active)' : 'Text Mode',
                     onPressed: () => setState(() {
+                      // Turning text mode on always disables eraser
                       _textMode = !_textMode;
                       if (!_textMode) {
                         _textFocusNode.unfocus();
@@ -2376,80 +2706,82 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Material(
-                  elevation: 4,
-                  borderRadius: BorderRadius.circular(8),
-                  color: _showColorPicker ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
-                  child: IconButton(
-                    icon: const Icon(Icons.palette),
-                    tooltip: _showColorPicker ? 'Color Picker (Open)' : 'Color Picker',
-                    onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                // Pen size control button
-                Material(
-                  elevation: 4,
-                  borderRadius: BorderRadius.circular(8),
-                  color: _showPenSizeControl ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
-                  child: IconButton(
-                    icon: const Icon(Icons.edit),
-                    tooltip: _showPenSizeControl ? 'Hide Pen Size' : 'Show Pen Size',
-                    onPressed: () => setState(() => _showPenSizeControl = !_showPenSizeControl),
-                  ),
-                ),
-                // Collapsible pen size control
-                if (_showPenSizeControl) ...[
-                  const SizedBox(height: 8),
+                if (!_textOnlyMode) ...[
                   Material(
                     elevation: 4,
                     borderRadius: BorderRadius.circular(8),
-                    color: Colors.grey[700],
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      width: 200,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.edit, size: 20),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Pen Size: ${_penSize.toStringAsFixed(1)}',
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                            ],
-                          ),
-                          if (_eraserMode) ...[
-                            const SizedBox(height: 4),
-                            Text(
-                              'Eraser Size: ${(_penSize * 2.0).toStringAsFixed(1)}',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: Theme.of(context).colorScheme.primary,
-                                fontStyle: FontStyle.italic,
-                              ),
-                            ),
-                          ],
-                          const SizedBox(height: 4),
-                          Slider(
-                            value: _penSize,
-                            min: 0.5,
-                            max: 10.0,
-                            divisions: 95,
-                            label: _penSize.toStringAsFixed(1),
-                            onChanged: (value) {
-                              setState(() {
-                                _penSize = value;
-                              });
-                            },
-                          ),
-                        ],
-                      ),
+                    color: _showColorPicker ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    child: IconButton(
+                      icon: const Icon(Icons.palette),
+                      tooltip: _showColorPicker ? 'Color Picker (Open)' : 'Color Picker',
+                      onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  // Pen size control button
+                  Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(8),
+                    color: _showPenSizeControl ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    child: IconButton(
+                      icon: const Icon(Icons.edit),
+                      tooltip: _showPenSizeControl ? 'Hide Pen Size' : 'Show Pen Size',
+                      onPressed: () => setState(() => _showPenSizeControl = !_showPenSizeControl),
+                    ),
+                  ),
+                  // Collapsible pen size control
+                  if (_showPenSizeControl) ...[
+                    const SizedBox(height: 8),
+                    Material(
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      color: Colors.grey[700],
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        width: 200,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.edit, size: 20),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Pen Size: ${_penSize.toStringAsFixed(1)}',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ],
+                            ),
+                            if (_eraserMode) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                'Eraser Size: ${(_penSize * 2.0).toStringAsFixed(1)}',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 4),
+                            Slider(
+                              value: _penSize,
+                              min: 0.5,
+                              max: 10.0,
+                              divisions: 95,
+                              label: _penSize.toStringAsFixed(1),
+                              onChanged: (value) {
+                                setState(() {
+                                  _penSize = value;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
                 ],
               ],
             ],
@@ -2599,7 +2931,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         // Font size adjuster (shown when in text mode and menu is open)
         if (_textMode && _showToolMenu)
           Positioned(
-            top: MediaQuery.of(context).padding.top + 16,
+            top: MediaQuery.of(context).padding.top + 16 + 48 + 8, // Align with top of first menu button (toggle button height + spacing)
             right: 80,
             child: Material(
               elevation: 8,

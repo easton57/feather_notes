@@ -52,7 +52,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -89,6 +89,10 @@ class DatabaseHelper {
       await db.execute('ALTER TABLE notes ADD COLUMN folder_id INTEGER');
       await db.execute('CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)');
     }
+    if (oldVersion < 4) {
+      // Add text_content column for text-only mode
+      await db.execute('ALTER TABLE notes ADD COLUMN text_content TEXT');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -111,6 +115,7 @@ class DatabaseHelper {
         modified_at INTEGER NOT NULL,
         tags TEXT,
         folder_id INTEGER,
+        text_content TEXT,
         FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
       )
     ''');
@@ -349,6 +354,32 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [id],
     );
+  }
+
+  Future<int> saveTextContent(int noteId, String textContent) async {
+    final db = await database;
+    return await db.update(
+      'notes',
+      {
+        'text_content': textContent,
+        'modified_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      where: 'id = ?',
+      whereArgs: [noteId],
+    );
+  }
+
+  Future<String?> getTextContent(int noteId) async {
+    final db = await database;
+    final result = await db.query(
+      'notes',
+      columns: ['text_content'],
+      where: 'id = ?',
+      whereArgs: [noteId],
+      limit: 1,
+    );
+    if (result.isEmpty) return null;
+    return result.first['text_content'] as String?;
   }
 
   Future<int> deleteNote(int id) async {

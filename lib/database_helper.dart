@@ -52,7 +52,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
     );
@@ -93,6 +93,10 @@ class DatabaseHelper {
       // Add text_content column for text-only mode
       await db.execute('ALTER TABLE notes ADD COLUMN text_content TEXT');
     }
+    if (oldVersion < 5) {
+      // Add is_text_only column to mark text-only notes
+      await db.execute('ALTER TABLE notes ADD COLUMN is_text_only INTEGER DEFAULT 0');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -116,6 +120,7 @@ class DatabaseHelper {
         tags TEXT,
         folder_id INTEGER,
         text_content TEXT,
+        is_text_only INTEGER DEFAULT 0,
         FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
       )
     ''');
@@ -175,7 +180,7 @@ class DatabaseHelper {
   }
 
   // Note operations
-  Future<int> createNote(String title, {int? folderId}) async {
+  Future<int> createNote(String title, {int? folderId, bool isTextOnly = false}) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;
     
@@ -184,14 +189,17 @@ class DatabaseHelper {
       'created_at': now,
       'modified_at': now,
       'folder_id': folderId,
+      'is_text_only': isTextOnly ? 1 : 0,
     });
 
-    // Initialize canvas state
-    await db.insert('canvas_state', {
-      'note_id': id,
-      'matrix_data': _matrixToJson(Matrix4.identity()),
-      'scale': 1.0,
-    });
+    // Only initialize canvas state for drawing notes
+    if (!isTextOnly) {
+      await db.insert('canvas_state', {
+        'note_id': id,
+        'matrix_data': _matrixToJson(Matrix4.identity()),
+        'scale': 1.0,
+      });
+    }
 
     return id;
   }
@@ -264,6 +272,7 @@ class DatabaseHelper {
         'modified_at': note['modified_at'],
         'tags': tags,
         'folder_id': note['folder_id'], // Include folder_id
+        'is_text_only': (note['is_text_only'] as int? ?? 0) == 1, // Include is_text_only
       });
     }
     
@@ -351,6 +360,16 @@ class DatabaseHelper {
         'title': title,
         'modified_at': DateTime.now().millisecondsSinceEpoch,
       },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> updateNoteType(int id, bool isTextOnly) async {
+    final db = await database;
+    return await db.update(
+      'notes',
+      {'is_text_only': isTextOnly ? 1 : 0},
       where: 'id = ?',
       whereArgs: [id],
     );

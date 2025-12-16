@@ -132,6 +132,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
   // Text-only mode state (per note)
   final Map<int, bool> _textOnlyMode = {};
   final Map<int, TextEditingController> _textContentControllers = {};
+  final Map<int, bool> _hasTextContent = {}; // Cache for notes with text content
   
   // Search and filter state
   final TextEditingController _searchController = TextEditingController();
@@ -181,13 +182,34 @@ class _NotesHomePageState extends State<NotesHomePage> {
         final noteId = n['id'] as int;
         final noteTags = n['tags'] as List<String>? ?? [];
         final folderId = n['folder_id'] as int?;
+        final isTextOnlyFromDB = n['is_text_only'] as bool? ?? false;
+        
+        // Check if note has text content for preview mode
+        final textContent = await DatabaseHelper.instance.getTextContent(noteId);
+        final hasTextContent = textContent != null && textContent.trim().isNotEmpty;
+        _hasTextContent[noteId] = hasTextContent;
+        
+        // If note has text content but isn't marked as text-only, treat it as text-only
+        // This handles migration of existing notes that were created before the type system
+        final isTextOnly = isTextOnlyFromDB || hasTextContent;
+        
+        // If we detected it should be text-only but DB says otherwise, update the DB
+        if (hasTextContent && !isTextOnlyFromDB) {
+          // Update the database to mark it as text-only
+          await DatabaseHelper.instance.updateNoteType(noteId, true);
+        }
+        
         loadedNotes.add({
           'id': noteId,
           'title': n['title'] as String,
           'tags': noteTags,
           'folder_id': folderId,
           'modified_at': n['modified_at'] as int,
+          'is_text_only': isTextOnly,
         });
+        
+        // Set text-only mode based on note type
+        _textOnlyMode[noteId] = isTextOnly;
         
         // Load canvas data for each note to ensure correct alignment
         try {
@@ -799,17 +821,55 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
   Future<void> _showCreateNoteDialog(BuildContext context, int? folderId) async {
     final controller = TextEditingController();
+    bool isTextOnly = false;
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
     
-    // Use rootNavigator: false to prevent drawer from closing
+    // First dialog: ask for note type
+    final noteType = await showDialog<bool>(
+      context: context,
+      useRootNavigator: false,
+      barrierDismissible: true,
+      builder: (context) => AlertDialog(
+        title: const Text('Choose Note Type'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.article),
+              title: const Text('Text Only'),
+              subtitle: const Text('Markdown text editor'),
+              onTap: () => Navigator.pop(context, true),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_note),
+              title: const Text('Infinite Drawing'),
+              subtitle: const Text('Canvas with drawing and text'),
+              onTap: () => Navigator.pop(context, false),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    
+    if (noteType == null) return; // User cancelled
+    
+    isTextOnly = noteType;
+    
+    // Second dialog: ask for note title
     final result = await showDialog<String>(
       context: context,
       useRootNavigator: false,
       barrierDismissible: true,
       builder: (context) => AlertDialog(
-        title: const Text('New Note'),
+        title: Text(isTextOnly ? 'New Text Note' : 'New Drawing Note'),
         content: TextField(
           controller: controller,
           autofocus: true,
@@ -841,7 +901,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
     
     if (result != null && result.isNotEmpty) {
-      final newNoteId = await DatabaseHelper.instance.createNote(result, folderId: folderId);
+      final newNoteId = await DatabaseHelper.instance.createNote(result, folderId: folderId, isTextOnly: isTextOnly);
       
       // If note was created in a folder, expand that folder
       if (folderId != null) {
@@ -1402,40 +1462,67 @@ class _NotesHomePageState extends State<NotesHomePage> {
               : (notes.isEmpty
                   ? const Center(child: Text('No notes available'))
                   : (selectedIndex >= 0 && selectedIndex < notes.length
-                      ? () {
-                          final noteId = notes[selectedIndex]['id'] as int;
-                          final isTextOnly = _textOnlyMode[noteId] ?? false;
-                          
-                          if (isTextOnly) {
-                            // Initialize text content controller if needed
-                            if (!_textContentControllers.containsKey(noteId)) {
-                              _textContentControllers[noteId] = TextEditingController();
-                              _loadTextContent(noteId);
+                      ? Builder(
+                          builder: (context) {
+                            final noteId = notes[selectedIndex]['id'] as int;
+                            
+                            // Check if note is text-only (from database)
+                            final isTextOnly = _textOnlyMode[noteId] ?? false;
+                            
+                            if (isTextOnly) {
+                              // Initialize text content controller if needed
+                              if (!_textContentControllers.containsKey(noteId)) {
+                                _textContentControllers[noteId] = TextEditingController();
+                              }
+                              
+                              // Use FutureBuilder to load text content before showing editor
+                              return FutureBuilder<String?>(
+                                future: DatabaseHelper.instance.getTextContent(noteId),
+                                builder: (context, snapshot) {
+                                  // Update controller with loaded text
+                                  if (snapshot.hasData && _textContentControllers.containsKey(noteId)) {
+                                    final textContent = snapshot.data ?? '';
+                                    if (_textContentControllers[noteId]!.text != textContent) {
+                                      _textContentControllers[noteId]!.text = textContent;
+                                      _hasTextContent[noteId] = textContent.trim().isNotEmpty;
+                                    }
+                                  }
+                                  
+                                  final hasTextContent = _hasTextContent[noteId] ?? (snapshot.hasData && (snapshot.data ?? '').trim().isNotEmpty);
+                                  
+                                  return TextEditorView(
+                                    noteId: noteId,
+                                    controller: _textContentControllers[noteId]!,
+                                    initialPreviewMode: hasTextContent, // Default to preview if has content
+                                    onTextChanged: (text) async {
+                                      await DatabaseHelper.instance.saveTextContent(noteId, text);
+                                      // Update cache - if text is saved, note now has text content
+                                      if (text.trim().isNotEmpty) {
+                                        _hasTextContent[noteId] = true;
+                                        _textOnlyMode[noteId] = true; // Ensure it stays in text-only mode
+                                      }
+                                    },
+                                  );
+                                },
+                              );
+                            } else {
+                              // Get or create a GlobalKey for this note's canvas to preserve state
+                              if (!_canvasKeys.containsKey(noteId)) {
+                                _canvasKeys[noteId] = GlobalKey();
+                              }
+                              return InfiniteCanvas(
+                                key: _canvasKeys[noteId],
+                                noteId: noteId,
+                                initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
+                                onDataChanged: (data) async {
+                                  if (selectedIndex >= 0 && selectedIndex < notes.length) {
+                                    await _saveNoteData(noteId, data);
+                                  }
+                                },
+                              );
                             }
-                            return TextEditorView(
-                              noteId: noteId,
-                              controller: _textContentControllers[noteId]!,
-                              onTextChanged: (text) async {
-                                await DatabaseHelper.instance.saveTextContent(noteId, text);
-                              },
-                            );
-                          } else {
-                            // Get or create a GlobalKey for this note's canvas to preserve state
-                            if (!_canvasKeys.containsKey(noteId)) {
-                              _canvasKeys[noteId] = GlobalKey();
-                            }
-                            return InfiniteCanvas(
-                              key: _canvasKeys[noteId],
-                              noteId: noteId,
-                              initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
-                              onDataChanged: (data) async {
-                                if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                                  await _saveNoteData(noteId, data);
-                                }
-                              },
-                            );
-                          }
-                        }()
+                          },
+                        )
                       : const Center(child: Text('No note selected')))),
           // Floating buttons and title
           Positioned(
@@ -1471,11 +1558,48 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         _searchController.clear();
                       });
                       
+                      // Show note type selection dialog
+                      final noteType = await showDialog<bool>(
+                        context: context,
+                        useRootNavigator: false,
+                        barrierDismissible: true,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Choose Note Type'),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ListTile(
+                                leading: const Icon(Icons.article),
+                                title: const Text('Text Only'),
+                                subtitle: const Text('Markdown text editor'),
+                                onTap: () => Navigator.pop(context, true),
+                              ),
+                              ListTile(
+                                leading: const Icon(Icons.edit_note),
+                                title: const Text('Infinite Drawing'),
+                                subtitle: const Text('Canvas with drawing and text'),
+                                onTap: () => Navigator.pop(context, false),
+                              ),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Cancel'),
+                            ),
+                          ],
+                        ),
+                      );
+                      
+                      if (noteType == null) return; // User cancelled
+                      
                       // Get total note count for proper naming (ignoring filters)
                       final allNotes = await DatabaseHelper.instance.getAllNotes(searchQuery: null, sortBy: 'id', filterTags: null);
-                      final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}');
+                      final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}', isTextOnly: noteType);
                       // Load the new note's data from database (even though it's empty, ensures consistency)
-                      await _loadNoteData(noteId);
+                      if (!noteType) {
+                        await _loadNoteData(noteId);
+                      }
                       await _loadNotes(); // Reload to get tags
                       setState(() {
                         // Find the index of the newly created note
@@ -1486,58 +1610,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
                           // If note not found (shouldn't happen), select first note
                           selectedIndex = 0;
                         }
-                        // Ensure canvas data is set
-                        if (!_noteCanvasData.containsKey(noteId)) {
+                        // Ensure canvas data is set for drawing notes
+                        if (!noteType && !_noteCanvasData.containsKey(noteId)) {
                           _noteCanvasData[noteId] = NoteCanvasData();
                         }
                       });
                     },
                   ),
                 ),
-                const SizedBox(width: 8),
-                // Top-level Text-only mode toggle (per note)
-                if (selectedIndex >= 0 && selectedIndex < notes.length)
-                  Material(
-                    elevation: 4,
-                    borderRadius: BorderRadius.circular(8),
-                    color: (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
-                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                        : Colors.grey[700],
-                    child: IconButton(
-                      icon: Icon(
-                        (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
-                            ? Icons.article
-                            : Icons.edit_note,
-                      ),
-                      tooltip: (_textOnlyMode[notes[selectedIndex]['id'] as int] ?? false)
-                          ? 'Switch to Canvas Mode'
-                          : 'Switch to Text Only Mode',
-                      onPressed: () async {
-                        if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                          final noteId = notes[selectedIndex]['id'] as int;
-                          final currentMode = _textOnlyMode[noteId] ?? false;
-
-                          // If leaving text-only mode, persist latest text content
-                          if (currentMode && _textContentControllers.containsKey(noteId)) {
-                            await DatabaseHelper.instance.saveTextContent(
-                              noteId,
-                              _textContentControllers[noteId]!.text,
-                            );
-                          }
-
-                          setState(() {
-                            _textOnlyMode[noteId] = !currentMode;
-
-                            // When entering text-only mode, ensure controller and content are loaded
-                            if (!currentMode && !_textContentControllers.containsKey(noteId)) {
-                              _textContentControllers[noteId] = TextEditingController();
-                              _loadTextContent(noteId);
-                            }
-                          });
-                        }
-                      },
-                    ),
-                  ),
                 const SizedBox(width: 8),
                 // Note title with same background and height as buttons
                 Material(
@@ -1638,12 +1718,14 @@ class TextEditorView extends StatefulWidget {
   final int noteId;
   final TextEditingController controller;
   final Function(String) onTextChanged;
+  final bool initialPreviewMode;
   
   const TextEditorView({
     super.key,
     required this.noteId,
     required this.controller,
     required this.onTextChanged,
+    this.initialPreviewMode = false,
   });
 
   @override
@@ -1652,11 +1734,12 @@ class TextEditorView extends StatefulWidget {
 
 class _TextEditorViewState extends State<TextEditorView> {
   Timer? _debounceTimer;
-  bool _previewMode = false;
+  late bool _previewMode;
   
   @override
   void initState() {
     super.initState();
+    _previewMode = widget.initialPreviewMode;
     widget.controller.addListener(_onTextChanged);
   }
   
@@ -1736,14 +1819,14 @@ class _TextEditorViewState extends State<TextEditorView> {
               },
             ),
           ),
-        // Back button when in preview mode
+        // Edit button when in preview mode
         if (_previewMode)
           Positioned(
             top: MediaQuery.of(context).padding.top + 16,
             right: 16,
             child: IconButton(
-              icon: const Icon(Icons.arrow_back),
-              tooltip: 'Back to Edit',
+              icon: const Icon(Icons.edit),
+              tooltip: 'Edit Mode',
               style: IconButton.styleFrom(
                 backgroundColor: Theme.of(context).colorScheme.surface,
                 foregroundColor: Theme.of(context).colorScheme.onSurface,

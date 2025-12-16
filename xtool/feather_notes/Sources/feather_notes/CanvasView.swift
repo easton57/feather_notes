@@ -24,12 +24,21 @@ struct CanvasView: View {
     
     init(noteId: Int) {
         self.noteId = noteId
-        let loadedData = DatabaseHelper.shared.loadCanvasData(noteId: noteId)
-        _canvasData = State(initialValue: loadedData)
-        _scale = State(initialValue: CGFloat(loadedData.scale))
-        let transform = loadedData.matrix.cgAffineTransform
-        _offset = State(initialValue: CGSize(width: transform.tx, height: transform.ty))
-        _lastOffset = State(initialValue: CGSize(width: transform.tx, height: transform.ty))
+        // Check if note is text-only - if so, use empty canvas data
+        let note = DatabaseHelper.shared.getNote(id: noteId)
+        if note?.isTextOnly == true {
+            _canvasData = State(initialValue: NoteCanvasData())
+            _scale = State(initialValue: 1.0)
+            _offset = State(initialValue: .zero)
+            _lastOffset = State(initialValue: .zero)
+        } else {
+            let loadedData = DatabaseHelper.shared.loadCanvasData(noteId: noteId)
+            _canvasData = State(initialValue: loadedData)
+            _scale = State(initialValue: CGFloat(loadedData.scale))
+            let transform = loadedData.matrix.cgAffineTransform
+            _offset = State(initialValue: CGSize(width: transform.tx, height: transform.ty))
+            _lastOffset = State(initialValue: CGSize(width: transform.tx, height: transform.ty))
+        }
         _selectedColor = State(initialValue: .black) // Will be updated in onAppear based on colorScheme
     }
     

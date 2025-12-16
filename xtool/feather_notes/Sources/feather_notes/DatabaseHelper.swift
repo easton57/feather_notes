@@ -24,6 +24,18 @@ class DatabaseHelper {
     }
     
     private func createTables() {
+        // Check database version and migrate if needed
+        let version = getDatabaseVersion()
+        if version == 0 {
+            // New database - create all tables with latest schema
+            createAllTables()
+        } else {
+            // Existing database - migrate if needed
+            migrateDatabase(from: version)
+        }
+    }
+    
+    private func createAllTables() {
         // Folders table
         let createFoldersTable = """
         CREATE TABLE IF NOT EXISTS folders (
@@ -43,10 +55,237 @@ class DatabaseHelper {
             created_at INTEGER NOT NULL,
             modified_at INTEGER NOT NULL,
             folder_id INTEGER,
+            text_content TEXT,
+            is_text_only INTEGER DEFAULT 0,
             FOREIGN KEY (folder_id) REFERENCES folders (id) ON DELETE SET NULL
         )
         """
         executeSQL(createNotesTable)
+        
+        // Create other tables...
+        createRemainingTables()
+        
+        // Set version to latest
+        setDatabaseVersion(5)
+    }
+    
+    private func createRemainingTables() {
+        // Note tags table
+        let createNoteTagsTable = """
+        CREATE TABLE IF NOT EXISTS note_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL,
+            tag TEXT NOT NULL,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE,
+            UNIQUE(note_id, tag)
+        )
+        """
+        executeSQL(createNoteTagsTable)
+        
+        // Strokes table
+        let createStrokesTable = """
+        CREATE TABLE IF NOT EXISTS strokes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL,
+            stroke_index INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE
+        )
+        """
+        executeSQL(createStrokesTable)
+        
+        // Text elements table
+        let createTextElementsTable = """
+        CREATE TABLE IF NOT EXISTS text_elements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note_id INTEGER NOT NULL,
+            text_index INTEGER NOT NULL,
+            position_x REAL NOT NULL,
+            position_y REAL NOT NULL,
+            text TEXT NOT NULL,
+            font_size REAL DEFAULT 16.0,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE
+        )
+        """
+        executeSQL(createTextElementsTable)
+        
+        // Canvas state table
+        let createCanvasStateTable = """
+        CREATE TABLE IF NOT EXISTS canvas_state (
+            note_id INTEGER PRIMARY KEY,
+            matrix_data TEXT NOT NULL,
+            scale REAL NOT NULL,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE
+        )
+        """
+        executeSQL(createCanvasStateTable)
+        
+        // Create indices
+        executeSQL("CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)")
+        executeSQL("CREATE INDEX IF NOT EXISTS idx_strokes_note_id ON strokes(note_id)")
+        executeSQL("CREATE INDEX IF NOT EXISTS idx_text_elements_note_id ON text_elements(note_id)")
+        executeSQL("CREATE INDEX IF NOT EXISTS idx_note_tags_note_id ON note_tags(note_id)")
+        executeSQL("CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag)")
+    }
+    
+    private func getDatabaseVersion() -> Int {
+        // Check if version table exists
+        let checkTableSQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='db_version'"
+        var statement: OpaquePointer?
+        var version = 0
+        
+        if sqlite3_prepare_v2(db, checkTableSQL, -1, &statement, nil) == SQLITE_OK {
+            if sqlite3_step(statement) == SQLITE_ROW {
+                // Version table exists, get version
+                sqlite3_finalize(statement)
+                let getVersionSQL = "SELECT version FROM db_version LIMIT 1"
+                if sqlite3_prepare_v2(db, getVersionSQL, -1, &statement, nil) == SQLITE_OK {
+                    if sqlite3_step(statement) == SQLITE_ROW {
+                        version = Int(sqlite3_column_int(statement, 0))
+                    }
+                }
+            } else {
+                // No version table - check if notes table exists to determine version
+                sqlite3_finalize(statement)
+                let checkNotesSQL = "PRAGMA table_info(notes)"
+                if sqlite3_prepare_v2(db, checkNotesSQL, -1, &statement, nil) == SQLITE_OK {
+                    var hasTextContent = false
+                    var hasIsTextOnly = false
+                    while sqlite3_step(statement) == SQLITE_ROW {
+                        if let colName = sqlite3_column_text(statement, 1) {
+                            let name = String(cString: colName)
+                            if name == "text_content" {
+                                hasTextContent = true
+                            }
+                            if name == "is_text_only" {
+                                hasIsTextOnly = true
+                            }
+                        }
+                    }
+                    sqlite3_finalize(statement)
+                    
+                    // Determine version based on schema
+                    if hasIsTextOnly {
+                        version = 5
+                    } else if hasTextContent {
+                        version = 4
+                    } else {
+                        // Check for folder_id to determine if version 3
+                        let checkFolderSQL = "PRAGMA table_info(notes)"
+                        if sqlite3_prepare_v2(db, checkFolderSQL, -1, &statement, nil) == SQLITE_OK {
+                            var hasFolderId = false
+                            while sqlite3_step(statement) == SQLITE_ROW {
+                                if let colName = sqlite3_column_text(statement, 1) {
+                                    let name = String(cString: colName)
+                                    if name == "folder_id" {
+                                        hasFolderId = true
+                                    }
+                                }
+                            }
+                            sqlite3_finalize(statement)
+                            version = hasFolderId ? 3 : 2
+                        }
+                    }
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+        return version
+    }
+    
+    private func setDatabaseVersion(_ version: Int) {
+        // Create version table if it doesn't exist
+        executeSQL("CREATE TABLE IF NOT EXISTS db_version (version INTEGER)")
+        // Set version
+        let sql = "INSERT OR REPLACE INTO db_version (version) VALUES (?)"
+        var statement: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            sqlite3_bind_int(statement, 1, Int32(version))
+            sqlite3_step(statement)
+        }
+        sqlite3_finalize(statement)
+    }
+    
+    private func migrateDatabase(from oldVersion: Int) {
+        // Create remaining tables if they don't exist
+        createRemainingTables()
+        
+        // Migrate from version 2 to 3 (add folders)
+        if oldVersion < 3 {
+            // Check if folders table exists
+            let checkFoldersSQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='folders'"
+            var statement: OpaquePointer?
+            var hasFolders = false
+            if sqlite3_prepare_v2(db, checkFoldersSQL, -1, &statement, nil) == SQLITE_OK {
+                hasFolders = sqlite3_step(statement) == SQLITE_ROW
+            }
+            sqlite3_finalize(statement)
+            
+            if !hasFolders {
+                executeSQL("""
+                    CREATE TABLE IF NOT EXISTS folders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        sort_order INTEGER DEFAULT 0
+                    )
+                """)
+                executeSQL("ALTER TABLE notes ADD COLUMN folder_id INTEGER")
+                executeSQL("CREATE INDEX IF NOT EXISTS idx_notes_folder_id ON notes(folder_id)")
+            }
+        }
+        
+        // Migrate from version 3 to 4 (add text_content)
+        if oldVersion < 4 {
+            // Check if text_content column exists
+            let checkColumnSQL = "PRAGMA table_info(notes)"
+            var statement: OpaquePointer?
+            var hasTextContent = false
+            if sqlite3_prepare_v2(db, checkColumnSQL, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let colName = sqlite3_column_text(statement, 1) {
+                        let name = String(cString: colName)
+                        if name == "text_content" {
+                            hasTextContent = true
+                            break
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+            
+            if !hasTextContent {
+                executeSQL("ALTER TABLE notes ADD COLUMN text_content TEXT")
+            }
+        }
+        
+        // Migrate from version 4 to 5 (add is_text_only)
+        if oldVersion < 5 {
+            // Check if is_text_only column exists
+            let checkColumnSQL = "PRAGMA table_info(notes)"
+            var statement: OpaquePointer?
+            var hasIsTextOnly = false
+            if sqlite3_prepare_v2(db, checkColumnSQL, -1, &statement, nil) == SQLITE_OK {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let colName = sqlite3_column_text(statement, 1) {
+                        let name = String(cString: colName)
+                        if name == "is_text_only" {
+                            hasIsTextOnly = true
+                            break
+                        }
+                    }
+                }
+            }
+            sqlite3_finalize(statement)
+            
+            if !hasIsTextOnly {
+                executeSQL("ALTER TABLE notes ADD COLUMN is_text_only INTEGER DEFAULT 0")
+            }
+        }
+        
+        // Update version
+        setDatabaseVersion(5)
+    }
         
         // Note tags table
         let createNoteTagsTable = """
@@ -121,9 +360,9 @@ class DatabaseHelper {
     }
     
     // MARK: - Note Operations
-    func createNote(title: String, folderId: Int? = nil) -> Int {
+    func createNote(title: String, folderId: Int? = nil, isTextOnly: Bool = false) -> Int {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
-        let sql = "INSERT INTO notes (title, created_at, modified_at, folder_id) VALUES (?, ?, ?, ?)"
+        let sql = "INSERT INTO notes (title, created_at, modified_at, folder_id, is_text_only) VALUES (?, ?, ?, ?, ?)"
         var statement: OpaquePointer?
         
         if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
@@ -135,11 +374,14 @@ class DatabaseHelper {
             } else {
                 sqlite3_bind_null(statement, 4)
             }
+            sqlite3_bind_int(statement, 5, isTextOnly ? 1 : 0)
             
             if sqlite3_step(statement) == SQLITE_DONE {
                 let noteId = Int(sqlite3_last_insert_rowid(db))
-                // Initialize canvas state
-                initializeCanvasState(noteId: noteId)
+                // Only initialize canvas state for drawing notes
+                if !isTextOnly {
+                    initializeCanvasState(noteId: noteId)
+                }
                 sqlite3_finalize(statement)
                 return noteId
             }
@@ -163,7 +405,7 @@ class DatabaseHelper {
     }
     
     func getAllNotes(searchQuery: String? = nil, sortBy: String = "id", filterTags: [String] = [], folderId: Int? = nil) -> [Note] {
-        var sql = "SELECT id, title, created_at, modified_at, folder_id FROM notes WHERE 1=1"
+        var sql = "SELECT id, title, created_at, modified_at, folder_id, is_text_only FROM notes WHERE 1=1"
         var statement: OpaquePointer?
         var notes: [Note] = []
         
@@ -217,9 +459,10 @@ class DatabaseHelper {
                 let createdAt = sqlite3_column_int64(statement, 2)
                 let modifiedAt = sqlite3_column_int64(statement, 3)
                 let folderId = sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, 4))
+                let isTextOnly = sqlite3_column_type(statement, 5) == SQLITE_NULL ? false : (sqlite3_column_int(statement, 5) == 1)
                 let tags = getNoteTags(noteId: id)
                 
-                notes.append(Note(id: id, title: title, createdAt: createdAt, modifiedAt: modifiedAt, folderId: folderId, tags: tags))
+                notes.append(Note(id: id, title: title, createdAt: createdAt, modifiedAt: modifiedAt, folderId: folderId, tags: tags, isTextOnly: isTextOnly))
             }
         }
         sqlite3_finalize(statement)
@@ -227,7 +470,7 @@ class DatabaseHelper {
     }
     
     func getNote(id: Int) -> Note? {
-        let sql = "SELECT id, title, created_at, modified_at, folder_id FROM notes WHERE id = ?"
+        let sql = "SELECT id, title, created_at, modified_at, folder_id, is_text_only FROM notes WHERE id = ?"
         var statement: OpaquePointer?
         var note: Note?
         
@@ -240,9 +483,10 @@ class DatabaseHelper {
                 let createdAt = sqlite3_column_int64(statement, 2)
                 let modifiedAt = sqlite3_column_int64(statement, 3)
                 let folderId = sqlite3_column_type(statement, 4) == SQLITE_NULL ? nil : Int(sqlite3_column_int64(statement, 4))
+                let isTextOnly = sqlite3_column_type(statement, 5) == SQLITE_NULL ? false : (sqlite3_column_int(statement, 5) == 1)
                 let tags = getNoteTags(noteId: noteId)
                 
-                note = Note(id: noteId, title: title, createdAt: createdAt, modifiedAt: modifiedAt, folderId: folderId, tags: tags)
+                note = Note(id: noteId, title: title, createdAt: createdAt, modifiedAt: modifiedAt, folderId: folderId, tags: tags, isTextOnly: isTextOnly)
             }
         }
         sqlite3_finalize(statement)
@@ -261,6 +505,52 @@ class DatabaseHelper {
             sqlite3_step(statement)
         }
         sqlite3_finalize(statement)
+    }
+    
+    func updateNoteType(id: Int, isTextOnly: Bool) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let sql = "UPDATE notes SET is_text_only = ?, modified_at = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            sqlite3_bind_int(statement, 1, isTextOnly ? 1 : 0)
+            sqlite3_bind_int64(statement, 2, now)
+            sqlite3_bind_int64(statement, 3, Int64(id))
+            sqlite3_step(statement)
+        }
+        sqlite3_finalize(statement)
+    }
+    
+    func saveTextContent(noteId: Int, textContent: String) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let sql = "UPDATE notes SET text_content = ?, modified_at = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            sqlite3_bind_text(statement, 1, (textContent as NSString).utf8String, -1, nil)
+            sqlite3_bind_int64(statement, 2, now)
+            sqlite3_bind_int64(statement, 3, Int64(noteId))
+            sqlite3_step(statement)
+        }
+        sqlite3_finalize(statement)
+    }
+    
+    func getTextContent(noteId: Int) -> String? {
+        let sql = "SELECT text_content FROM notes WHERE id = ?"
+        var statement: OpaquePointer?
+        var textContent: String?
+        
+        if sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK {
+            sqlite3_bind_int64(statement, 1, Int64(noteId))
+            
+            if sqlite3_step(statement) == SQLITE_ROW {
+                if sqlite3_column_type(statement, 0) != SQLITE_NULL {
+                    textContent = String(cString: sqlite3_column_text(statement, 0))
+                }
+            }
+        }
+        sqlite3_finalize(statement)
+        return textContent
     }
     
     func deleteNote(id: Int) {

@@ -205,14 +205,16 @@ struct Note: Identifiable, Codable {
     var modifiedAt: Int64
     var folderId: Int?
     var tags: [String]
+    var isTextOnly: Bool
     
-    init(id: Int, title: String, createdAt: Int64, modifiedAt: Int64, folderId: Int? = nil, tags: [String] = []) {
+    init(id: Int, title: String, createdAt: Int64, modifiedAt: Int64, folderId: Int? = nil, tags: [String] = [], isTextOnly: Bool = false) {
         self.id = id
         self.title = title
         self.createdAt = createdAt
         self.modifiedAt = modifiedAt
         self.folderId = folderId
         self.tags = tags
+        self.isTextOnly = isTextOnly
     }
 }
 

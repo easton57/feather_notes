@@ -12,6 +12,11 @@ struct NotesListView: View {
     @State private var showingSettings = false
     @State private var editingNoteId: Int?
     @State private var editingNoteTitle: String = ""
+    @State private var showingNoteTypeDialog = false
+    @State private var showingNoteContextMenu = false
+    @State private var showingFolderContextMenu = false
+    @State private var contextMenuNoteId: Int?
+    @State private var contextMenuFolderId: Int?
     
     var body: some View {
         NavigationSplitView {
@@ -83,10 +88,16 @@ struct NotesListView: View {
                                             editingNoteId = nil
                                             loadNotes()
                                         }
+                                    } onLongPress: { position in
+                                        showNoteContextMenu(noteId: note.id, position: position)
                                     }
                                 }
                             } label: {
                                 Label(folder.name, systemImage: "folder")
+                                    .contentShape(Rectangle())
+                                    .onLongPressGesture { location in
+                                        showFolderContextMenu(folderId: folder.id, position: location)
+                                    }
                             }
                         }
                     }
@@ -108,6 +119,8 @@ struct NotesListView: View {
                                 editingNoteId = nil
                                 loadNotes()
                             }
+                        } onLongPress: { position in
+                            showNoteContextMenu(noteId: note.id, position: position)
                         }
                     }
                 }
@@ -120,7 +133,7 @@ struct NotesListView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: createNewNote) {
+                    Button(action: { showingNoteTypeDialog = true }) {
                         Image(systemName: "plus")
                     }
                 }
@@ -128,15 +141,47 @@ struct NotesListView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
+            .confirmationDialog("Create New Note", isPresented: $showingNoteTypeDialog, titleVisibility: .visible) {
+                Button("Text Only") {
+                    createNewNote(isTextOnly: true)
+                }
+                Button("Infinite Drawing") {
+                    createNewNote(isTextOnly: false)
+                }
+                Button("Cancel", role: .cancel) {}
+            }
             .onAppear {
                 loadNotes()
             }
             .onChange(of: searchText) { _, _ in loadNotes() }
             .onChange(of: sortBy) { _, _ in loadNotes() }
             .onChange(of: selectedTags) { _, _ in loadNotes() }
+            .confirmationDialog("Note Actions", isPresented: $showingNoteContextMenu, titleVisibility: .visible) {
+                if let noteId = contextMenuNoteId, let note = notes.first(where: { $0.id == noteId }) {
+                    Button("Rename") {
+                        editingNoteId = note.id
+                        editingNoteTitle = note.title
+                    }
+                    Button("Delete", role: .destructive) {
+                        deleteNote(note.id)
+                    }
+                }
+            }
+            .confirmationDialog("Folder Actions", isPresented: $showingFolderContextMenu, titleVisibility: .visible) {
+                if let folderId = contextMenuFolderId {
+                    Button("Delete Folder", role: .destructive) {
+                        DatabaseHelper.shared.deleteFolder(id: folderId)
+                        loadNotes()
+                    }
+                }
+            }
         } detail: {
             if let noteId = selectedNoteId {
-                CanvasView(noteId: noteId)
+                if let note = notes.first(where: { $0.id == noteId }), note.isTextOnly {
+                    TextEditorView(noteId: noteId)
+                } else {
+                    CanvasView(noteId: noteId)
+                }
             } else {
                 Text("Select a note")
                     .foregroundColor(.secondary)
@@ -161,12 +206,46 @@ struct NotesListView: View {
         )
         folders = DatabaseHelper.shared.getAllFolders()
         availableTags = DatabaseHelper.shared.getAllTags()
+        
+        // Select last edited note on startup if no note is selected
+        if selectedNoteId == nil && !notes.isEmpty {
+            let sortedNotes = notes.sorted { $0.modifiedAt > $1.modifiedAt }
+            if let lastNote = sortedNotes.first {
+                selectedNoteId = lastNote.id
+            }
+        }
+        
+        // Check for notes with text content but not marked as text-only
+        for note in notes {
+            if !note.isTextOnly, let textContent = DatabaseHelper.shared.getTextContent(noteId: note.id), !textContent.isEmpty {
+                // Update note to be text-only
+                DatabaseHelper.shared.updateNoteType(id: note.id, isTextOnly: true)
+                // Reload to get updated note
+                let updatedNotes = DatabaseHelper.shared.getAllNotes(
+                    searchQuery: searchQuery,
+                    sortBy: sortBy,
+                    filterTags: Array(selectedTags)
+                )
+                notes = updatedNotes
+                break
+            }
+        }
     }
     
-    private func createNewNote() {
-        let noteId = DatabaseHelper.shared.createNote(title: "New Note")
+    private func createNewNote(isTextOnly: Bool) {
+        let noteId = DatabaseHelper.shared.createNote(title: "New Note", isTextOnly: isTextOnly)
         selectedNoteId = noteId
         loadNotes()
+    }
+    
+    private func showNoteContextMenu(noteId: Int, position: CGPoint) {
+        contextMenuNoteId = noteId
+        showingNoteContextMenu = true
+    }
+    
+    private func showFolderContextMenu(folderId: Int, position: CGPoint) {
+        contextMenuFolderId = folderId
+        showingFolderContextMenu = true
     }
     
     private func deleteNote(_ id: Int) {
@@ -186,6 +265,7 @@ struct NoteRow: View {
     let onEdit: () -> Void
     let onDelete: () -> Void
     let onSave: () -> Void
+    let onLongPress: ((CGPoint) -> Void)?
     
     var body: some View {
         HStack {
@@ -215,22 +295,17 @@ struct NoteRow: View {
                     }
                 }
                 Spacer()
-                Menu {
-                    Button(action: onEdit) {
-                        Label("Edit", systemImage: "pencil")
-                    }
-                    Button(role: .destructive, action: onDelete) {
-                        Label("Delete", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
             }
         }
         .contentShape(Rectangle())
         .onTapGesture {
             if !isEditing {
                 onTap()
+            }
+        }
+        .onLongPressGesture { location in
+            if !isEditing, let onLongPress = onLongPress {
+                onLongPress(location)
             }
         }
     }

@@ -20,7 +20,7 @@ import 'cloud_sync/sync_settings_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize SQLite for desktop platforms
   // Note: This will show a warning about changing the default factory,
   // which is expected and necessary for desktop platforms
@@ -28,7 +28,7 @@ void main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  
+
   runApp(const NotesApp());
 }
 
@@ -73,9 +73,7 @@ class _NotesAppState extends State<NotesApp> {
   Widget build(BuildContext context) {
     if (_isLoading) {
       return const MaterialApp(
-        home: Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        ),
+        home: Scaffold(body: Center(child: CircularProgressIndicator())),
       );
     }
 
@@ -98,16 +96,14 @@ class _NotesAppState extends State<NotesApp> {
         canvasColor: const Color(0xFF121212),
       ),
       themeMode: _themeMode,
-      home: NotesHomePage(
-        onThemeModeChanged: _setThemeMode,
-      ),
+      home: NotesHomePage(onThemeModeChanged: _setThemeMode),
     );
   }
 }
 
 class NotesHomePage extends StatefulWidget {
   final Future<void> Function(ThemeMode) onThemeModeChanged;
-  
+
   const NotesHomePage({super.key, required this.onThemeModeChanged});
 
   @override
@@ -116,7 +112,8 @@ class NotesHomePage extends StatefulWidget {
 
 class _NotesHomePageState extends State<NotesHomePage> {
   final List<Map<String, dynamic>> notes = []; // {id, title, tags, folder_id}
-  final List<Map<String, dynamic>> folders = []; // {id, name, created_at, sort_order}
+  final List<Map<String, dynamic>> folders =
+      []; // {id, name, created_at, sort_order}
   int selectedIndex = 0;
   int? _editingIndex;
   int? _editingFolderIndex;
@@ -125,31 +122,32 @@ class _NotesHomePageState extends State<NotesHomePage> {
   final Map<int, NoteCanvasData> _noteCanvasData = {};
   bool _isLoading = true;
   bool _isCreatingDefaultNote = false; // Flag to prevent recursion
-  
+
   // GlobalKey to preserve InfiniteCanvas state across rebuilds
   final Map<int, GlobalKey> _canvasKeys = {};
-  
+
   // Text-only mode state (per note)
   final Map<int, bool> _textOnlyMode = {};
   final Map<int, TextEditingController> _textContentControllers = {};
-  final Map<int, bool> _hasTextContent = {}; // Cache for notes with text content
-  
+  final Map<int, bool> _hasTextContent =
+      {}; // Cache for notes with text content
+
   // Search and filter state
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String _sortBy = 'id'; // 'id', 'title', 'date_created', 'date_modified'
   List<String> _selectedTags = [];
   List<String> _availableTags = [];
-  
+
   // Folder expansion state
   final Set<int> _expandedFolders = {};
-  
+
   // Scaffold key for drawer control
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
-  
+
   // Sync manager for cloud sync operations
   final SyncManager _syncManager = SyncManager();
-  
+
   // Track if this is the initial load
   bool _isInitialLoad = true;
 
@@ -164,10 +162,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
     try {
       // Load available tags
       final tags = await DatabaseHelper.instance.getAllTags();
-      
+
       // Load folders
       final foldersList = await DatabaseHelper.instance.getAllFolders();
-      
+
       // Load notes with search, sort, and filter
       final notesList = await DatabaseHelper.instance.getAllNotes(
         searchQuery: _searchQuery.isEmpty ? null : _searchQuery,
@@ -176,29 +174,32 @@ class _NotesHomePageState extends State<NotesHomePage> {
       );
       final List<Map<String, dynamic>> loadedNotes = [];
       final Map<int, NoteCanvasData> loadedCanvasData = {};
-      
+
       // Load all notes and their canvas data before setting state
       for (final n in notesList) {
         final noteId = n['id'] as int;
         final noteTags = n['tags'] as List<String>? ?? [];
         final folderId = n['folder_id'] as int?;
         final isTextOnlyFromDB = n['is_text_only'] as bool? ?? false;
-        
+
         // Check if note has text content for preview mode
-        final textContent = await DatabaseHelper.instance.getTextContent(noteId);
-        final hasTextContent = textContent != null && textContent.trim().isNotEmpty;
+        final textContent = await DatabaseHelper.instance.getTextContent(
+          noteId,
+        );
+        final hasTextContent =
+            textContent != null && textContent.trim().isNotEmpty;
         _hasTextContent[noteId] = hasTextContent;
-        
+
         // If note has text content but isn't marked as text-only, treat it as text-only
         // This handles migration of existing notes that were created before the type system
         final isTextOnly = isTextOnlyFromDB || hasTextContent;
-        
+
         // If we detected it should be text-only but DB says otherwise, update the DB
         if (hasTextContent && !isTextOnlyFromDB) {
           // Update the database to mark it as text-only
           await DatabaseHelper.instance.updateNoteType(noteId, true);
         }
-        
+
         loadedNotes.add({
           'id': noteId,
           'title': n['title'] as String,
@@ -207,14 +208,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
           'modified_at': n['modified_at'] as int,
           'is_text_only': isTextOnly,
         });
-        
+
         // Set text-only mode based on note type
         _textOnlyMode[noteId] = isTextOnly;
-        
+
         // Load canvas data for each note to ensure correct alignment
         try {
           final data = await DatabaseHelper.instance.loadCanvasData(noteId);
-          
+
           // Validate and fix matrix if corrupted
           Matrix4 matrix = Matrix4.copy(data.matrix);
           final determinant = matrix.determinant();
@@ -222,17 +223,27 @@ class _NotesHomePageState extends State<NotesHomePage> {
             // Matrix is corrupted, reset to identity
             matrix = Matrix4.identity();
           }
-          
+
           // Validate scale
           double scale = data.scale;
           if (!scale.isFinite || scale <= 0 || scale.isNaN) {
             scale = 1.0;
           }
-          
+
           // Create a deep copy to avoid reference sharing
           loadedCanvasData[noteId] = NoteCanvasData(
-            strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
-            textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+            strokes: data.strokes
+                .map(
+                  (s) => Stroke(
+                    List.from(s.points),
+                    color: s.color,
+                    penSize: s.penSize,
+                  ),
+                )
+                .toList(),
+            textElements: data.textElements
+                .map((te) => TextElement(te.position, te.text))
+                .toList(),
             matrix: matrix,
             scale: scale,
           );
@@ -241,7 +252,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
           loadedCanvasData[noteId] = NoteCanvasData();
         }
       }
-      
+
       // If no notes exist, create a default one before setting state
       // Use flag to prevent recursion
       if (loadedNotes.isEmpty && !_isCreatingDefaultNote) {
@@ -251,7 +262,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
         // _createDefaultNote will set _isLoading = false
         return;
       }
-      
+
       setState(() {
         notes.clear();
         notes.addAll(loadedNotes);
@@ -260,9 +271,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
         _noteCanvasData.clear();
         _noteCanvasData.addAll(loadedCanvasData);
         _availableTags = tags;
-        
+
         // On initial load with no filters, select the most recently edited note
-        if (_isInitialLoad && _searchQuery.isEmpty && _selectedTags.isEmpty && notes.isNotEmpty) {
+        if (_isInitialLoad &&
+            _searchQuery.isEmpty &&
+            _selectedTags.isEmpty &&
+            notes.isNotEmpty) {
           // Find the note with the highest modified_at timestamp
           int mostRecentIndex = 0;
           int mostRecentModified = 0;
@@ -298,7 +312,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
       }
     }
   }
-  
+
   void _applyFilters() {
     setState(() {
       _isLoading = true;
@@ -310,7 +324,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     // Group notes by folder
     final Map<int?, List<Map<String, dynamic>>> notesByFolder = {};
     final List<int> noteIndices = [];
-    
+
     for (int i = 0; i < notes.length; i++) {
       final folderId = notes[i]['folder_id'] as int?;
       if (!notesByFolder.containsKey(folderId)) {
@@ -319,7 +333,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
       notesByFolder[folderId]!.add(notes[i]);
       noteIndices.add(i);
     }
-    
+
     return ListView(
       padding: EdgeInsets.zero,
       children: [
@@ -330,25 +344,28 @@ class _NotesHomePageState extends State<NotesHomePage> {
             final i = notes.indexWhere((n) => n['id'] == note['id']);
             return _buildNoteTile(i, note);
           }),
-        
+
         // Folders with their notes
         ...folders.map((folder) {
           final folderId = folder['id'] as int;
           final folderNotes = notesByFolder[folderId] ?? [];
           final isExpanded = _expandedFolders.contains(folderId);
-          
+
           return GestureDetector(
             onLongPressStart: (details) {
-              _showFolderContextMenu(context, folderId, folder['name'] as String, details.globalPosition);
+              _showFolderContextMenu(
+                context,
+                folderId,
+                folder['name'] as String,
+                details.globalPosition,
+              );
             },
             child: ExpansionTile(
               title: Row(
                 children: [
                   const Icon(Icons.folder, size: 20),
                   const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(folder['name'] as String),
-                  ),
+                  Expanded(child: Text(folder['name'] as String)),
                 ],
               ),
               initiallyExpanded: isExpanded,
@@ -388,16 +405,6 @@ class _NotesHomePageState extends State<NotesHomePage> {
             ),
           );
         }),
-        
-        // Add folder button
-        ListTile(
-          leading: const Icon(Icons.create_new_folder),
-          title: const Text('New Folder'),
-          onTap: () {
-            // Don't close drawer - show dialog instead
-            _showCreateFolderDialog(context);
-          },
-        ),
       ],
     );
   }
@@ -405,7 +412,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
   Widget _buildNoteTile(int i, Map<String, dynamic> note) {
     final noteId = note['id'] as int;
     final noteTags = note['tags'] as List<String>? ?? [];
-    
+
     return GestureDetector(
       onLongPressStart: (details) {
         _showNoteContextMenu(
@@ -424,11 +431,15 @@ class _NotesHomePageState extends State<NotesHomePage> {
             ? Wrap(
                 spacing: 4,
                 runSpacing: 4,
-                children: noteTags.map((tag) => Chip(
-                  label: Text(tag, style: const TextStyle(fontSize: 10)),
-                  padding: EdgeInsets.zero,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                )).toList(),
+                children: noteTags
+                    .map(
+                      (tag) => Chip(
+                        label: Text(tag, style: const TextStyle(fontSize: 10)),
+                        padding: EdgeInsets.zero,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    )
+                    .toList(),
               )
             : null,
         selected: i == selectedIndex,
@@ -442,7 +453,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
               await _saveNoteData(currentNoteId, currentCanvasData);
             }
           }
-          
+
           setState(() {
             selectedIndex = i;
           });
@@ -456,11 +467,20 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
   }
 
-  void _showNoteContextMenu(BuildContext context, int index, int noteId, String noteTitle, List<String> noteTags, int? folderId, Offset tapPosition) {
-    final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-    
+  void _showNoteContextMenu(
+    BuildContext context,
+    int index,
+    int noteId,
+    String noteTitle,
+    List<String> noteTags,
+    int? folderId,
+    Offset tapPosition,
+  ) {
+    final RenderBox? overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+
     if (overlay == null) return;
-    
+
     showMenu(
       context: context,
       useRootNavigator: false,
@@ -530,11 +550,17 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
   }
 
-  void _showFolderContextMenu(BuildContext context, int folderId, String folderName, Offset tapPosition) {
-    final RenderBox? overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
-    
+  void _showFolderContextMenu(
+    BuildContext context,
+    int folderId,
+    String folderName,
+    Offset tapPosition,
+  ) {
+    final RenderBox? overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox?;
+
     if (overlay == null) return;
-    
+
     showMenu(
       context: context,
       useRootNavigator: false,
@@ -589,12 +615,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
     );
   }
 
-  Future<void> _showEditNoteDialog(BuildContext context, int noteId, String currentTitle) async {
+  Future<void> _showEditNoteDialog(
+    BuildContext context,
+    int noteId,
+    String currentTitle,
+  ) async {
     final controller = TextEditingController(text: currentTitle);
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
-    
+
     // Use rootNavigator: false to prevent drawer from closing
     final result = await showDialog<String>(
       context: context,
@@ -631,11 +661,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (result != null && result.isNotEmpty && result != currentTitle) {
       await DatabaseHelper.instance.updateNoteTitle(noteId, result);
       await _loadNotes();
-      
+
       // Reopen drawer if it was open before
       if (wasDrawerOpen && scaffoldState != null) {
         scaffoldState.openDrawer();
@@ -646,12 +676,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
     }
   }
 
-  Future<void> _showEditFolderDialog(BuildContext context, int folderId, String currentName) async {
+  Future<void> _showEditFolderDialog(
+    BuildContext context,
+    int folderId,
+    String currentName,
+  ) async {
     final controller = TextEditingController(text: currentName);
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
-    
+
     // Use rootNavigator: false to prevent drawer from closing
     final result = await showDialog<String>(
       context: context,
@@ -688,11 +722,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (result != null && result.isNotEmpty && result != currentName) {
       await DatabaseHelper.instance.updateFolderName(folderId, result);
       await _loadNotes();
-      
+
       // Reopen drawer if it was open before
       if (wasDrawerOpen && scaffoldState != null) {
         scaffoldState.openDrawer();
@@ -708,7 +742,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
-    
+
     // Use rootNavigator: false to prevent drawer from closing
     final result = await showDialog<String>(
       context: context,
@@ -745,16 +779,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (result != null && result.isNotEmpty) {
       final newFolderId = await DatabaseHelper.instance.createFolder(result);
       await _loadNotes();
-      
+
       // Expand the newly created folder
       setState(() {
         _expandedFolders.add(newFolderId);
       });
-      
+
       // Reopen drawer if it was open before
       if (wasDrawerOpen && scaffoldState != null) {
         scaffoldState.openDrawer();
@@ -769,7 +803,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
-    
+
     // Use rootNavigator: false to prevent drawer from closing
     final confirmed = await showDialog<bool>(
       context: context,
@@ -777,7 +811,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
       barrierDismissible: true,
       builder: (context) => AlertDialog(
         title: const Text('Delete Folder'),
-        content: const Text('Are you sure you want to delete this folder? Notes in this folder will be moved to the root.'),
+        content: const Text(
+          'Are you sure you want to delete this folder? Notes in this folder will be moved to the root.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -791,10 +827,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (confirmed == true) {
       // Delete from cloud sync if configured
-      if (_syncManager.currentProvider != null && 
+      if (_syncManager.currentProvider != null &&
           await _syncManager.currentProvider!.isConfigured()) {
         try {
           final remotePath = '/feather_notes/folders/folder_$folderId.json';
@@ -805,10 +841,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
           print('Error deleting folder from cloud: $e');
         }
       }
-      
+
       await DatabaseHelper.instance.deleteFolder(folderId);
       _loadNotes();
-      
+
       // Reopen drawer if it was open before
       if (wasDrawerOpen && scaffoldState != null) {
         scaffoldState.openDrawer();
@@ -819,13 +855,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
     }
   }
 
-  Future<void> _showCreateNoteDialog(BuildContext context, int? folderId) async {
+  Future<void> _showCreateNoteDialog(
+    BuildContext context,
+    int? folderId,
+  ) async {
     final controller = TextEditingController();
     bool isTextOnly = false;
     // Get scaffold to keep drawer open
     final scaffoldState = _scaffoldKey.currentState;
     final wasDrawerOpen = scaffoldState?.isDrawerOpen ?? false;
-    
+
     // First dialog: ask for note type
     final noteType = await showDialog<bool>(
       context: context,
@@ -858,11 +897,11 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (noteType == null) return; // User cancelled
-    
+
     isTextOnly = noteType;
-    
+
     // Second dialog: ask for note title
     final result = await showDialog<String>(
       context: context,
@@ -899,20 +938,24 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (result != null && result.isNotEmpty) {
-      final newNoteId = await DatabaseHelper.instance.createNote(result, folderId: folderId, isTextOnly: isTextOnly);
-      
+      final newNoteId = await DatabaseHelper.instance.createNote(
+        result,
+        folderId: folderId,
+        isTextOnly: isTextOnly,
+      );
+
       // If note was created in a folder, expand that folder
       if (folderId != null) {
         setState(() {
           _expandedFolders.add(folderId);
         });
       }
-      
+
       // Reload notes to get the new note in the list
       await _loadNotes();
-      
+
       // Find and select the newly created note after reload
       setState(() {
         final index = notes.indexWhere((n) => n['id'] == newNoteId);
@@ -920,13 +963,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
           selectedIndex = index;
         }
       });
-      
+
       // Load the note data if we found it
       if (selectedIndex >= 0 && selectedIndex < notes.length) {
         final noteId = notes[selectedIndex]['id'] as int;
         await _loadNoteData(noteId);
       }
-      
+
       // Reopen drawer if it was open before
       if (wasDrawerOpen && scaffoldState != null) {
         scaffoldState.openDrawer();
@@ -937,12 +980,16 @@ class _NotesHomePageState extends State<NotesHomePage> {
     }
   }
 
-  Future<void> _showMoveToFolderDialog(BuildContext context, int noteId, int? currentFolderId) async {
+  Future<void> _showMoveToFolderDialog(
+    BuildContext context,
+    int noteId,
+    int? currentFolderId,
+  ) async {
     // Use a sentinel value to distinguish between cancel and "No Folder" selection
     // -1 = cancelled, -2 = "No Folder" (null), positive = folderId
     const int cancelSentinel = -1;
     const int noFolderSentinel = -2;
-    
+
     // Use rootNavigator: false to prevent drawer from closing
     final result = await showDialog<int>(
       context: context,
@@ -990,18 +1037,21 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     // Only move if user selected a different folder (not cancelled)
     if (result == null || result == cancelSentinel) {
       return; // User cancelled or dialog was dismissed
     }
-    
+
     final targetFolderId = result == noFolderSentinel ? null : result;
     if (targetFolderId != currentFolderId) {
       try {
         // Move the note in the database
-        final rowsAffected = await DatabaseHelper.instance.moveNoteToFolder(noteId, targetFolderId);
-        
+        final rowsAffected = await DatabaseHelper.instance.moveNoteToFolder(
+          noteId,
+          targetFolderId,
+        );
+
         if (rowsAffected > 0) {
           // If moving to a folder, expand that folder
           if (targetFolderId != null) {
@@ -1009,10 +1059,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
               _expandedFolders.add(targetFolderId);
             });
           }
-          
+
           // Reload notes to reflect the change
           await _loadNotes();
-          
+
           // Find and maintain selection of the moved note
           setState(() {
             final index = notes.indexWhere((n) => n['id'] == noteId);
@@ -1020,7 +1070,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
               selectedIndex = index;
             }
           });
-          
+
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -1060,7 +1110,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
         sortBy: 'id',
         filterTags: null,
       );
-      
+
       if (existingNotes.isNotEmpty) {
         // Notes already exist, just load them normally
         setState(() {
@@ -1069,22 +1119,22 @@ class _NotesHomePageState extends State<NotesHomePage> {
         // Don't call _loadNotes here to avoid recursion - let the caller handle it
         return;
       }
-      
+
       // Clear filters when creating default note
       _searchQuery = '';
       _selectedTags.clear();
       if (_searchController.text.isNotEmpty) {
         _searchController.clear();
       }
-      
+
       final noteId = await DatabaseHelper.instance.createNote('New Note');
-      
+
       // Load the note directly without calling _loadNotes to avoid recursion
       final note = await DatabaseHelper.instance.getNote(noteId);
       if (note != null) {
         final noteTags = await DatabaseHelper.instance.getNoteTags(noteId);
         final tags = await DatabaseHelper.instance.getAllTags();
-        
+
         setState(() {
           notes.clear();
           notes.add({
@@ -1120,7 +1170,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     // Always reload from database to ensure we have the latest data and correct alignment
     try {
       final data = await DatabaseHelper.instance.loadCanvasData(noteId);
-      
+
       // Validate and fix matrix if corrupted
       Matrix4 matrix = Matrix4.copy(data.matrix);
       final determinant = matrix.determinant();
@@ -1128,18 +1178,28 @@ class _NotesHomePageState extends State<NotesHomePage> {
         // Matrix is corrupted, reset to identity
         matrix = Matrix4.identity();
       }
-      
+
       // Validate scale
       double scale = data.scale;
       if (!scale.isFinite || scale <= 0 || scale.isNaN) {
         scale = 1.0;
       }
-      
+
       // Create a deep copy to avoid reference sharing between notes
       setState(() {
         _noteCanvasData[noteId] = NoteCanvasData(
-          strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
-          textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+          strokes: data.strokes
+              .map(
+                (s) => Stroke(
+                  List.from(s.points),
+                  color: s.color,
+                  penSize: s.penSize,
+                ),
+              )
+              .toList(),
+          textElements: data.textElements
+              .map((te) => TextElement(te.position, te.text))
+              .toList(),
           matrix: matrix,
           scale: scale,
         );
@@ -1155,19 +1215,26 @@ class _NotesHomePageState extends State<NotesHomePage> {
   Future<void> _saveNoteData(int noteId, NoteCanvasData data) async {
     // Create a deep copy before storing to avoid reference sharing
     final dataCopy = NoteCanvasData(
-      strokes: data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList(),
-      textElements: data.textElements.map((te) => TextElement(te.position, te.text)).toList(),
+      strokes: data.strokes
+          .map(
+            (s) =>
+                Stroke(List.from(s.points), color: s.color, penSize: s.penSize),
+          )
+          .toList(),
+      textElements: data.textElements
+          .map((te) => TextElement(te.position, te.text))
+          .toList(),
       matrix: Matrix4.copy(data.matrix),
       scale: data.scale,
     );
-    
+
     // Only update if data actually changed to prevent unnecessary rebuilds
     final existingData = _noteCanvasData[noteId];
-    
+
     // Check if data has changed - need to check stroke contents, not just length
     // because strokes are added to the list at the start and then modified
     bool hasChanged = existingData == null;
-    
+
     if (!hasChanged) {
       // Check lengths first (quick check)
       if (existingData.strokes.length != dataCopy.strokes.length ||
@@ -1195,7 +1262,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
         }
       }
     }
-    
+
     if (hasChanged) {
       _noteCanvasData[noteId] = dataCopy;
       await DatabaseHelper.instance.saveCanvasData(noteId, dataCopy);
@@ -1219,7 +1286,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Note'),
-        content: Text('Are you sure you want to delete "${notes[index]['title']}"?'),
+        content: Text(
+          'Are you sure you want to delete "${notes[index]['title']}"?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1237,7 +1306,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
     if (confirmed == true) {
       try {
         // Delete from cloud sync if configured
-        if (_syncManager.currentProvider != null && 
+        if (_syncManager.currentProvider != null &&
             await _syncManager.currentProvider!.isConfigured()) {
           try {
             final remotePath = '/feather_notes/note_$noteId.json';
@@ -1248,10 +1317,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
             print('Error deleting note from cloud: $e');
           }
         }
-        
+
         // Delete from database
         await DatabaseHelper.instance.deleteNote(noteId);
-        
+
         // Determine new selectedIndex before removing the note
         int newSelectedIndex = selectedIndex;
         if (selectedIndex >= notes.length - 1) {
@@ -1267,39 +1336,39 @@ class _NotesHomePageState extends State<NotesHomePage> {
             newSelectedIndex = notes.length - 2;
           }
         }
-        
+
         // Clean up controllers
         _noteControllers[noteId]?.dispose();
         _noteControllers.remove(noteId);
-        
+
         // Remove canvas data
         _noteCanvasData.remove(noteId);
-        
+
         // Remove from notes list
         notes.removeAt(index);
-        
+
         // Update selectedIndex and reload all notes' data to ensure correct alignment
         setState(() {
           selectedIndex = newSelectedIndex.clamp(0, notes.length - 1);
         });
-        
+
         // Reload all notes' canvas data to ensure correct alignment after deletion
         for (final note in notes) {
           final id = note['id'] as int;
           await _loadNoteData(id);
         }
-        
+
         // Ensure the selected note's data is loaded
         if (selectedIndex >= 0 && selectedIndex < notes.length) {
           final newNoteId = notes[selectedIndex]['id'] as int;
           await _loadNoteData(newNoteId);
         }
-        
+
         // Force a rebuild to update the UI
         if (mounted) {
           setState(() {});
         }
-        
+
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -1376,18 +1445,36 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   _applyFilters();
                 },
               ),
+            ), // Add folder button
+            ListTile(
+              leading: const Icon(Icons.create_new_folder),
+              title: const Text('New Folder'),
+              onTap: () {
+                // Don't close drawer - show dialog instead
+                _showCreateFolderDialog(context);
+              },
             ),
+
             // Sort dropdown
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8.0,
+                vertical: 4.0,
+              ),
               child: DropdownButton<String>(
                 value: _sortBy,
                 isExpanded: true,
                 items: const [
                   DropdownMenuItem(value: 'id', child: Text('Creation Order')),
                   DropdownMenuItem(value: 'title', child: Text('Title (A-Z)')),
-                  DropdownMenuItem(value: 'date_created', child: Text('Date Created')),
-                  DropdownMenuItem(value: 'date_modified', child: Text('Recently Modified')),
+                  DropdownMenuItem(
+                    value: 'date_created',
+                    child: Text('Date Created'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'date_modified',
+                    child: Text('Recently Modified'),
+                  ),
                 ],
                 onChanged: (value) {
                   if (value != null) {
@@ -1402,7 +1489,10 @@ class _NotesHomePageState extends State<NotesHomePage> {
             // Tags filter
             if (_availableTags.isNotEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8.0,
+                  vertical: 4.0,
+                ),
                 child: Wrap(
                   spacing: 4,
                   runSpacing: 4,
@@ -1425,9 +1515,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   }).toList(),
                 ),
               ),
-            Expanded(
-              child: _buildNotesList(),
-            ),
+            Expanded(child: _buildNotesList()),
             const Divider(),
             ListTile(
               leading: const Icon(Icons.settings),
@@ -1460,70 +1548,97 @@ class _NotesHomePageState extends State<NotesHomePage> {
           _isLoading
               ? const Center(child: CircularProgressIndicator())
               : (notes.isEmpty
-                  ? const Center(child: Text('No notes available'))
-                  : (selectedIndex >= 0 && selectedIndex < notes.length
-                      ? Builder(
-                          builder: (context) {
-                            final noteId = notes[selectedIndex]['id'] as int;
-                            
-                            // Check if note is text-only (from database)
-                            final isTextOnly = _textOnlyMode[noteId] ?? false;
-                            
-                            if (isTextOnly) {
-                              // Initialize text content controller if needed
-                              if (!_textContentControllers.containsKey(noteId)) {
-                                _textContentControllers[noteId] = TextEditingController();
-                              }
-                              
-                              // Use FutureBuilder to load text content before showing editor
-                              return FutureBuilder<String?>(
-                                future: DatabaseHelper.instance.getTextContent(noteId),
-                                builder: (context, snapshot) {
-                                  // Update controller with loaded text
-                                  if (snapshot.hasData && _textContentControllers.containsKey(noteId)) {
-                                    final textContent = snapshot.data ?? '';
-                                    if (_textContentControllers[noteId]!.text != textContent) {
-                                      _textContentControllers[noteId]!.text = textContent;
-                                      _hasTextContent[noteId] = textContent.trim().isNotEmpty;
-                                    }
+                    ? const Center(child: Text('No notes available'))
+                    : (selectedIndex >= 0 && selectedIndex < notes.length
+                          ? Builder(
+                              builder: (context) {
+                                final noteId =
+                                    notes[selectedIndex]['id'] as int;
+
+                                // Check if note is text-only (from database)
+                                final isTextOnly =
+                                    _textOnlyMode[noteId] ?? false;
+
+                                if (isTextOnly) {
+                                  // Initialize text content controller if needed
+                                  if (!_textContentControllers.containsKey(
+                                    noteId,
+                                  )) {
+                                    _textContentControllers[noteId] =
+                                        TextEditingController();
                                   }
-                                  
-                                  final hasTextContent = _hasTextContent[noteId] ?? (snapshot.hasData && (snapshot.data ?? '').trim().isNotEmpty);
-                                  
-                                  return TextEditorView(
+
+                                  // Use FutureBuilder to load text content before showing editor
+                                  return FutureBuilder<String?>(
+                                    future: DatabaseHelper.instance
+                                        .getTextContent(noteId),
+                                    builder: (context, snapshot) {
+                                      // Update controller with loaded text
+                                      if (snapshot.hasData &&
+                                          _textContentControllers.containsKey(
+                                            noteId,
+                                          )) {
+                                        final textContent = snapshot.data ?? '';
+                                        if (_textContentControllers[noteId]!
+                                                .text !=
+                                            textContent) {
+                                          _textContentControllers[noteId]!
+                                                  .text =
+                                              textContent;
+                                          _hasTextContent[noteId] = textContent
+                                              .trim()
+                                              .isNotEmpty;
+                                        }
+                                      }
+
+                                      final hasTextContent =
+                                          _hasTextContent[noteId] ??
+                                          (snapshot.hasData &&
+                                              (snapshot.data ?? '')
+                                                  .trim()
+                                                  .isNotEmpty);
+
+                                      return TextEditorView(
+                                        noteId: noteId,
+                                        controller:
+                                            _textContentControllers[noteId]!,
+                                        initialPreviewMode:
+                                            hasTextContent, // Default to preview if has content
+                                        onTextChanged: (text) async {
+                                          await DatabaseHelper.instance
+                                              .saveTextContent(noteId, text);
+                                          // Update cache - if text is saved, note now has text content
+                                          if (text.trim().isNotEmpty) {
+                                            _hasTextContent[noteId] = true;
+                                            _textOnlyMode[noteId] =
+                                                true; // Ensure it stays in text-only mode
+                                          }
+                                        },
+                                      );
+                                    },
+                                  );
+                                } else {
+                                  // Get or create a GlobalKey for this note's canvas to preserve state
+                                  if (!_canvasKeys.containsKey(noteId)) {
+                                    _canvasKeys[noteId] = GlobalKey();
+                                  }
+                                  return InfiniteCanvas(
+                                    key: _canvasKeys[noteId],
                                     noteId: noteId,
-                                    controller: _textContentControllers[noteId]!,
-                                    initialPreviewMode: hasTextContent, // Default to preview if has content
-                                    onTextChanged: (text) async {
-                                      await DatabaseHelper.instance.saveTextContent(noteId, text);
-                                      // Update cache - if text is saved, note now has text content
-                                      if (text.trim().isNotEmpty) {
-                                        _hasTextContent[noteId] = true;
-                                        _textOnlyMode[noteId] = true; // Ensure it stays in text-only mode
+                                    initialData:
+                                        _noteCanvasData[noteId] ??
+                                        NoteCanvasData(),
+                                    onDataChanged: (data) async {
+                                      if (selectedIndex >= 0 &&
+                                          selectedIndex < notes.length) {
+                                        await _saveNoteData(noteId, data);
                                       }
                                     },
                                   );
-                                },
-                              );
-                            } else {
-                              // Get or create a GlobalKey for this note's canvas to preserve state
-                              if (!_canvasKeys.containsKey(noteId)) {
-                                _canvasKeys[noteId] = GlobalKey();
-                              }
-                              return InfiniteCanvas(
-                                key: _canvasKeys[noteId],
-                                noteId: noteId,
-                                initialData: _noteCanvasData[noteId] ?? NoteCanvasData(),
-                                onDataChanged: (data) async {
-                                  if (selectedIndex >= 0 && selectedIndex < notes.length) {
-                                    await _saveNoteData(noteId, data);
-                                  }
-                                },
-                              );
-                            }
-                          },
-                        )
-                      : const Center(child: Text('No note selected')))),
+                                }
+                              },
+                            )
+                          : const Center(child: Text('No note selected')))),
           // Floating buttons and title
           Positioned(
             top: MediaQuery.of(context).padding.top + 16,
@@ -1557,7 +1672,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         _selectedTags.clear();
                         _searchController.clear();
                       });
-                      
+
                       // Show note type selection dialog
                       final noteType = await showDialog<bool>(
                         context: context,
@@ -1577,7 +1692,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
                               ListTile(
                                 leading: const Icon(Icons.edit_note),
                                 title: const Text('Infinite Drawing'),
-                                subtitle: const Text('Canvas with drawing and text'),
+                                subtitle: const Text(
+                                  'Canvas with drawing and text',
+                                ),
                                 onTap: () => Navigator.pop(context, false),
                               ),
                             ],
@@ -1590,12 +1707,20 @@ class _NotesHomePageState extends State<NotesHomePage> {
                           ],
                         ),
                       );
-                      
+
                       if (noteType == null) return; // User cancelled
-                      
+
                       // Get total note count for proper naming (ignoring filters)
-                      final allNotes = await DatabaseHelper.instance.getAllNotes(searchQuery: null, sortBy: 'id', filterTags: null);
-                      final noteId = await DatabaseHelper.instance.createNote('Note ${allNotes.length + 1}', isTextOnly: noteType);
+                      final allNotes = await DatabaseHelper.instance
+                          .getAllNotes(
+                            searchQuery: null,
+                            sortBy: 'id',
+                            filterTags: null,
+                          );
+                      final noteId = await DatabaseHelper.instance.createNote(
+                        'Note ${allNotes.length + 1}',
+                        isTextOnly: noteType,
+                      );
                       // Load the new note's data from database (even though it's empty, ensures consistency)
                       if (!noteType) {
                         await _loadNoteData(noteId);
@@ -1603,7 +1728,9 @@ class _NotesHomePageState extends State<NotesHomePage> {
                       await _loadNotes(); // Reload to get tags
                       setState(() {
                         // Find the index of the newly created note
-                        final index = notes.indexWhere((n) => n['id'] == noteId);
+                        final index = notes.indexWhere(
+                          (n) => n['id'] == noteId,
+                        );
                         if (index >= 0) {
                           selectedIndex = index;
                         } else if (notes.isNotEmpty) {
@@ -1626,9 +1753,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
                   color: Colors.grey[700],
                   child: InkWell(
                     onTap: () {
-                      if (!_isLoading && selectedIndex >= 0 && selectedIndex < notes.length) {
+                      if (!_isLoading &&
+                          selectedIndex >= 0 &&
+                          selectedIndex < notes.length) {
                         final noteId = notes[selectedIndex]['id'] as int;
-                        final noteTitle = notes[selectedIndex]['title'] as String;
+                        final noteTitle =
+                            notes[selectedIndex]['title'] as String;
                         _showEditNoteDialog(context, noteId, noteTitle);
                       }
                     },
@@ -1639,12 +1769,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           child: Text(
-                            _isLoading 
-                                ? 'Loading...' 
-                                : (selectedIndex < notes.length ? notes[selectedIndex]['title'] as String : 'Infinite Notes'),
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: Colors.white,
-                            ),
+                            _isLoading
+                                ? 'Loading...'
+                                : (selectedIndex < notes.length
+                                      ? notes[selectedIndex]['title'] as String
+                                      : 'Infinite Notes'),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(color: Colors.white),
                           ),
                         ),
                       ),
@@ -1658,8 +1789,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
       ),
     );
   }
-  
-  Future<void> _showTagEditor(BuildContext context, int noteId, List<String> currentTags) async {
+
+  Future<void> _showTagEditor(
+    BuildContext context,
+    int noteId,
+    List<String> currentTags,
+  ) async {
     final tagController = TextEditingController(text: currentTags.join(', '));
     final result = await showDialog<List<String>>(
       context: context,
@@ -1692,13 +1827,13 @@ class _NotesHomePageState extends State<NotesHomePage> {
         ],
       ),
     );
-    
+
     if (result != null) {
       await DatabaseHelper.instance.setNoteTags(noteId, result);
       await _loadNotes();
     }
   }
-  
+
   @override
   void dispose() {
     for (final controller in _noteControllers.values) {
@@ -1719,7 +1854,7 @@ class TextEditorView extends StatefulWidget {
   final TextEditingController controller;
   final Function(String) onTextChanged;
   final bool initialPreviewMode;
-  
+
   const TextEditorView({
     super.key,
     required this.noteId,
@@ -1735,21 +1870,21 @@ class TextEditorView extends StatefulWidget {
 class _TextEditorViewState extends State<TextEditorView> {
   Timer? _debounceTimer;
   late bool _previewMode;
-  
+
   @override
   void initState() {
     super.initState();
     _previewMode = widget.initialPreviewMode;
     widget.controller.addListener(_onTextChanged);
   }
-  
+
   @override
   void dispose() {
     _debounceTimer?.cancel();
     widget.controller.removeListener(_onTextChanged);
     super.dispose();
   }
-  
+
   void _onTextChanged() {
     // Debounce saves to avoid too frequent database writes
     _debounceTimer?.cancel();
@@ -1757,13 +1892,13 @@ class _TextEditorViewState extends State<TextEditorView> {
       widget.onTextChanged(widget.controller.text);
     });
   }
-  
+
   @override
   Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
     final textColor = isDark ? Colors.white : Colors.black;
-    
+
     return Stack(
       children: [
         Positioned.fill(
@@ -1779,7 +1914,9 @@ class _TextEditorViewState extends State<TextEditorView> {
                       _markdownToTextSpan(
                         widget.controller.text,
                         textColor,
-                        baseFontSize: Theme.of(context).textTheme.bodyLarge?.fontSize ?? 16.0,
+                        baseFontSize:
+                            Theme.of(context).textTheme.bodyLarge?.fontSize ??
+                            16.0,
                       ),
                     ),
                   )
@@ -1793,9 +1930,12 @@ class _TextEditorViewState extends State<TextEditorView> {
                     decoration: InputDecoration(
                       border: InputBorder.none,
                       hintText: 'Start typing... (Markdown supported)',
-                      hintStyle: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurface.withOpacity(0.5),
-                      ),
+                      hintStyle: Theme.of(context).textTheme.bodyLarge
+                          ?.copyWith(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.onSurface.withOpacity(0.5),
+                          ),
                     ),
                   ),
           ),
@@ -1847,7 +1987,7 @@ class InfiniteCanvas extends StatefulWidget {
   final int noteId;
   final NoteCanvasData? initialData;
   final Function(NoteCanvasData) onDataChanged;
-  
+
   const InfiniteCanvas({
     super.key,
     required this.noteId,
@@ -1869,60 +2009,65 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   late double _scale;
   late List<Stroke> _strokes;
   late List<TextElement> _textElements;
-  
+
   Stroke? _currentStroke;
   final List<CanvasState> _undoStack = [];
   final List<CanvasState> _redoStack = [];
   bool _eraserMode = false;
-  
+
   // Drawing color
   Color _selectedColor = Colors.black;
   bool _showColorPicker = false;
-  bool _useColorWheel = false; // false = BlockPicker, true = ColorPicker (wheel)
-  
+  bool _useColorWheel =
+      false; // false = BlockPicker, true = ColorPicker (wheel)
+
   // Pen size (base width multiplier, 0.5 to 10.0)
   double _penSize = 1.0;
-  
+
   // Text mode
   bool _textMode = false;
   // When enabled, hide all drawings and treat the canvas as text-only
   bool _textOnlyMode = false;
   TextElement? _activeTextElement;
-  int? _editingTextElementIndex; // Index of text element being edited, null if creating new
+  int?
+  _editingTextElementIndex; // Index of text element being edited, null if creating new
   final FocusNode _textFocusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
-  DateTime? _textElementCreatedAt; // Track when text element was created to prevent immediate dismissal
-  bool _textElementHasBeenFocused = false; // Track if text element has ever received focus
+  DateTime?
+  _textElementCreatedAt; // Track when text element was created to prevent immediate dismissal
+  bool _textElementHasBeenFocused =
+      false; // Track if text element has ever received focus
 
   Offset _lastFocalPoint = Offset.zero;
   int _pointerCount = 0;
-  
+
   // Store theme brightness to ensure it's always current
   Brightness? _lastBrightness;
-  
+
   // Panning state
   bool _isPanning = false;
   Offset? _panStartPosition; // Initial position when panning started
-  Offset? _lastPanPosition; // Previous position for incremental delta calculation
-  
+  Offset?
+  _lastPanPosition; // Previous position for incremental delta calculation
+
   // Minimap state
   bool _showMinimap = true;
-  
+
   // Text font size
   double _textFontSize = 16.0;
-  
+
   // Collapsible menu state
   bool _showToolMenu = false;
   bool _showPenSizeControl = false;
-  
+
   // Drawing indicator position
   Offset? _drawingIndicatorPosition;
-  
+
   @override
   void initState() {
     super.initState();
     _loadCanvasData();
-    
+
     // Listen for focus changes to track when text element has been focused
     _textFocusNode.addListener(() {
       if (_textFocusNode.hasFocus && _activeTextElement != null) {
@@ -1932,11 +2077,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       }
     });
   }
-  
+
   @override
   void didUpdateWidget(InfiniteCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
-    
+
     // If note ID changed, save current data and load the new note's canvas data
     if (oldWidget.noteId != widget.noteId) {
       _saveCurrentData();
@@ -1945,28 +2090,30 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       // If same note but data changed (e.g., loaded from database), reload
       // BUT: NEVER reload if we have an active text element OR if one was recently created
       // This prevents the text box from disappearing during rebuilds
-      
+
       // Check if text element was recently created (even if state was reset)
       final now = DateTime.now();
-      final recentlyCreated = _textElementCreatedAt != null && 
-          now.difference(_textElementCreatedAt!).inMilliseconds < 5000; // 5 seconds - increased for safety
-      
+      final recentlyCreated =
+          _textElementCreatedAt != null &&
+          now.difference(_textElementCreatedAt!).inMilliseconds <
+              5000; // 5 seconds - increased for safety
+
       // Also check if text controller has text (indicates active editing)
       final hasText = _textController.text.isNotEmpty;
-      
+
       if (_activeTextElement == null && !recentlyCreated && !hasText) {
         // Use a deep comparison to detect actual changes
-        final dataEqual = _dataEquals(oldWidget.initialData, widget.initialData);
+        final dataEqual = _dataEquals(
+          oldWidget.initialData,
+          widget.initialData,
+        );
         if (!dataEqual) {
           _loadCanvasData();
-        } else {
-        }
-      } else {
-      }
-    } else {
-    }
+        } else {}
+      } else {}
+    } else {}
   }
-  
+
   bool _dataEquals(NoteCanvasData? a, NoteCanvasData? b) {
     if (a == null && b == null) return true;
     if (a == null || b == null) return false;
@@ -1975,24 +2122,25 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     // For performance, just check lengths - full comparison would be expensive
     return true;
   }
-  
+
   void _loadCanvasData() {
-    
     // NEVER reload if we have an active text element OR if one was recently created
     // Check both the current state and the creation timestamp to catch cases where
     // the widget was rebuilt and state was reset but the text element should still exist
     final now = DateTime.now();
-    final recentlyCreated = _textElementCreatedAt != null && 
-        now.difference(_textElementCreatedAt!).inMilliseconds < 2000; // 2 seconds
-    
+    final recentlyCreated =
+        _textElementCreatedAt != null &&
+        now.difference(_textElementCreatedAt!).inMilliseconds <
+            2000; // 2 seconds
+
     if (_activeTextElement != null || recentlyCreated) {
       // Even if blocked, preserve the matrix to prevent it from changing
       return;
     }
-    
+
     // Create a deep copy to ensure we're not sharing references
     final data = widget.initialData ?? NoteCanvasData();
-    
+
     // PRESERVE active text element and related state - don't lose it during reload
     // (Even though we check above, preserve it just in case)
     final preservedActiveTextElement = _activeTextElement;
@@ -2001,9 +2149,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     final preservedTextElementHasBeenFocused = _textElementHasBeenFocused;
     final preservedTextControllerText = _textController.text;
     // PRESERVE current matrix if text element is active (lock position)
-    final preservedMatrix = _activeTextElement != null ? Matrix4.copy(_matrix) : null;
+    final preservedMatrix = _activeTextElement != null
+        ? Matrix4.copy(_matrix)
+        : null;
     final preservedScale = _activeTextElement != null ? _scale : null;
-    
+
     setState(() {
       // If we have an active text element, DON'T change the matrix (lock position)
       if (preservedActiveTextElement != null && preservedMatrix != null) {
@@ -2018,7 +2168,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           matrix = Matrix4.identity();
         }
         _matrix = matrix;
-        
+
         // Validate scale
         double scale = data.scale;
         if (!scale.isFinite || scale <= 0 || scale.isNaN) {
@@ -2026,15 +2176,21 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         }
         _scale = scale;
       }
-      
-      
+
       // Create new lists to avoid reference sharing
-      _strokes = data.strokes.map((s) => Stroke(List.from(s.points), color: s.color, penSize: s.penSize)).toList();
-      _textElements = data.textElements.map((te) => TextElement(te.position, te.text)).toList();
+      _strokes = data.strokes
+          .map(
+            (s) =>
+                Stroke(List.from(s.points), color: s.color, penSize: s.penSize),
+          )
+          .toList();
+      _textElements = data.textElements
+          .map((te) => TextElement(te.position, te.text))
+          .toList();
       _currentStroke = null;
       _undoStack.clear();
       _redoStack.clear();
-      
+
       // RESTORE preserved text element state
       _activeTextElement = preservedActiveTextElement;
       _editingTextElementIndex = preservedEditingTextElementIndex;
@@ -2044,9 +2200,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         _textController.text = preservedTextControllerText;
       }
     });
-    
   }
-  
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -2063,27 +2218,31 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       });
     }
   }
-  
+
   void _saveCurrentData() {
     // Don't save if we have an active text element that hasn't been focused yet
     // This prevents triggering parent reloads that cause the text box to disappear
     if (_activeTextElement != null && !_textElementHasBeenFocused) {
       return;
     }
-    
-    widget.onDataChanged(NoteCanvasData(
-      strokes: _strokes,
-      textElements: _textElements,
-      matrix: _matrix,
-      scale: _scale,
-    ));
+
+    widget.onDataChanged(
+      NoteCanvasData(
+        strokes: _strokes,
+        textElements: _textElements,
+        matrix: _matrix,
+        scale: _scale,
+      ),
+    );
   }
-  
+
   void _submitText() {
     setState(() {
       final value = _textController.text;
       if (value.isNotEmpty && _activeTextElement != null) {
-        _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+        _undoStack.add(
+          CanvasState(List.from(_strokes), List.from(_textElements)),
+        );
         if (_editingTextElementIndex != null) {
           // Update existing text element
           _textElements[_editingTextElementIndex!] = TextElement(
@@ -2105,25 +2264,25 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       _textFocusNode.unfocus();
     });
   }
-  
+
   Offset _transformToScreen(Offset localPoint) {
     final v = vm.Vector4(localPoint.dx, localPoint.dy, 0, 1);
     final r = _matrix.transform(v);
     return Offset(r.x, r.y);
   }
-  
+
   // Calculate bounds of all content (strokes and text)
   Rect _calculateContentBounds() {
     if (_strokes.isEmpty && _textElements.isEmpty) {
       // Return default bounds if no content
       return const Rect.fromLTWH(-1000, -1000, 2000, 2000);
     }
-    
+
     double minX = double.infinity;
     double minY = double.infinity;
     double maxX = double.negativeInfinity;
     double maxY = double.negativeInfinity;
-    
+
     // Check all stroke points
     for (final stroke in _strokes) {
       for (final point in stroke.points) {
@@ -2133,27 +2292,35 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         maxY = maxY > point.position.dy ? maxY : point.position.dy;
       }
     }
-    
+
     // Check all text elements
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
     final textColor = isDark ? Colors.white : Colors.black;
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
-    
+
     for (final textElement in _textElements) {
       if (textElement.text.isEmpty) continue;
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: _textFontSize);
+      textPainter.text = _markdownToTextSpan(
+        textElement.text,
+        textColor,
+        baseFontSize: _textFontSize,
+      );
       textPainter.layout();
-      
+
       final textWidth = textPainter.width;
       final textHeight = textPainter.height;
-      
+
       minX = minX < textElement.position.dx ? minX : textElement.position.dx;
       minY = minY < textElement.position.dy ? minY : textElement.position.dy;
-      maxX = maxX > (textElement.position.dx + textWidth) ? maxX : (textElement.position.dx + textWidth);
-      maxY = maxY > (textElement.position.dy + textHeight) ? maxY : (textElement.position.dy + textHeight);
+      maxX = maxX > (textElement.position.dx + textWidth)
+          ? maxX
+          : (textElement.position.dx + textWidth);
+      maxY = maxY > (textElement.position.dy + textHeight)
+          ? maxY
+          : (textElement.position.dy + textHeight);
     }
-    
+
     // Add padding
     const padding = 100.0;
     return Rect.fromLTRB(
@@ -2163,34 +2330,44 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       maxY + padding,
     );
   }
-  
+
   // Calculate current viewport bounds in canvas coordinates
   Rect _calculateViewportBounds(Size screenSize) {
     // Transform screen corners to canvas coordinates using the inverse matrix
     // The screen coordinates are relative to the Listener widget which fills the Stack
-    
+
     // Get the four corners of the visible screen area
     final topLeft = Offset(0, 0);
     final topRight = Offset(screenSize.width, 0);
     final bottomLeft = Offset(0, screenSize.height);
     final bottomRight = Offset(screenSize.width, screenSize.height);
-    
+
     // Transform each corner to canvas coordinates
     final canvasTopLeft = _transformToLocal(topLeft);
     final canvasTopRight = _transformToLocal(topRight);
     final canvasBottomLeft = _transformToLocal(bottomLeft);
     final canvasBottomRight = _transformToLocal(bottomRight);
-    
+
     // Find the bounding box of all transformed corners
     // This gives us the actual viewport bounds in canvas coordinates
-    final xCoords = [canvasTopLeft.dx, canvasTopRight.dx, canvasBottomLeft.dx, canvasBottomRight.dx];
-    final yCoords = [canvasTopLeft.dy, canvasTopRight.dy, canvasBottomLeft.dy, canvasBottomRight.dy];
-    
+    final xCoords = [
+      canvasTopLeft.dx,
+      canvasTopRight.dx,
+      canvasBottomLeft.dx,
+      canvasBottomRight.dx,
+    ];
+    final yCoords = [
+      canvasTopLeft.dy,
+      canvasTopRight.dy,
+      canvasBottomLeft.dy,
+      canvasBottomRight.dy,
+    ];
+
     final minX = xCoords.reduce((a, b) => a < b ? a : b);
     final maxX = xCoords.reduce((a, b) => a > b ? a : b);
     final minY = yCoords.reduce((a, b) => a < b ? a : b);
     final maxY = yCoords.reduce((a, b) => a > b ? a : b);
-    
+
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
 
@@ -2199,7 +2376,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     // Get theme brightness directly from context and track changes
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
-    
+
     // Initialize color based on theme if not set
     if (_selectedColor == Colors.black && isDark) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2218,7 +2395,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         }
       });
     }
-    
+
     // Force rebuild if brightness changed
     if (_lastBrightness != null && _lastBrightness != brightness) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2231,7 +2408,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     } else {
       _lastBrightness = brightness;
     }
-    
+
     return Stack(
       children: [
         Listener(
@@ -2248,7 +2425,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
             if (_activeTextElement != null) {
               return; // Don't allow scrolling while text box is active
             }
-            
+
             // Handle mouse wheel scrolling for zoom
             if (event.kind == ui.PointerDeviceKind.mouse) {
               // Try to access scrollDelta property (available on scroll events)
@@ -2256,35 +2433,40 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 // Use dynamic access since scrollDelta might not be in the type definition
                 // but is available at runtime for scroll events
                 final scrollDelta = (event as dynamic).scrollDelta;
-                
+
                 if (scrollDelta != null) {
                   final delta = scrollDelta as Offset;
-                  
-                  if (delta.dy.abs() > 0.1) { // Only zoom if there's significant vertical scroll
+
+                  if (delta.dy.abs() > 0.1) {
+                    // Only zoom if there's significant vertical scroll
                     setState(() {
                       // Use vertical scroll for zoom
                       // Negative dy means scroll up (zoom in), positive dy means scroll down (zoom out)
                       // Scale factor based on scroll amount for smoother zooming
                       final scrollAmount = delta.dy.abs();
-                      final baseZoomFactor = scrollAmount > 10 ? 1.15 : 1.1; // Faster zoom for larger scrolls
-                      final zoomFactor = delta.dy < 0 ? baseZoomFactor : 1.0 / baseZoomFactor;
-                      
+                      final baseZoomFactor = scrollAmount > 10
+                          ? 1.15
+                          : 1.1; // Faster zoom for larger scrolls
+                      final zoomFactor = delta.dy < 0
+                          ? baseZoomFactor
+                          : 1.0 / baseZoomFactor;
+
                       // Get the focal point (mouse position) in screen coordinates
                       final focalPoint = event.localPosition;
-                      
+
                       // Transform focal point to canvas coordinates
                       final focal = _transformToLocal(focalPoint);
-                      
+
                       // Create transformation matrix for scaling around focal point
                       // This is: T(-focal) * S(scale) * T(focal)
                       final scaleTransform = Matrix4.identity()
                         ..translate(-focal.dx, -focal.dy, 0)
                         ..scale(zoomFactor)
                         ..translate(focal.dx, focal.dy, 0);
-                      
+
                       // Apply scaling transformation
                       _matrix = scaleTransform * _matrix;
-                      
+
                       _saveCurrentData();
                     });
                   }
@@ -2306,26 +2488,26 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               if (_activeTextElement != null) {
                 return; // Don't allow panning/zooming while text box is active
               }
-              
+
               // Handle both single-finger panning (when scale is 1.0) and two-finger pinch zoom
               if (details.pointerCount >= 2) {
                 setState(() {
                   // Handle panning (translation)
                   final dx = details.focalPoint.dx - _lastFocalPoint.dx;
                   final dy = details.focalPoint.dy - _lastFocalPoint.dy;
-                  
+
                   // Handle zooming (scaling)
                   final newScale = details.scale;
                   final scaleFactor = newScale / _scale;
-                  
+
                   // Only apply scaling if scale actually changed (avoid unnecessary updates)
                   if (scaleFactor != 1.0) {
                     // Get the focal point in screen coordinates (where the user is pinching)
                     final focalScreen = details.focalPoint;
-                    
+
                     // Transform focal point to canvas coordinates using current matrix
                     final focalCanvas = _transformToLocal(focalScreen);
-                    
+
                     // To scale around the focal point while keeping it fixed in screen space:
                     // We want the canvas point at focalCanvas to map to the same screen position
                     // after scaling. The formula is:
@@ -2347,18 +2529,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       ..translate(focalScreen.dx, focalScreen.dy, 0)
                       ..scale(scaleFactor)
                       ..translate(-focalScreen.dx, -focalScreen.dy, 0);
-                    
+
                     // Apply: newMatrix = scaleTransform * oldMatrix
                     _matrix = scaleTransform * _matrix;
                   }
-                  
+
                   // Apply translation (panning)
                   if (dx != 0 || dy != 0) {
                     final currentTranslation = _matrix.getTranslation();
                     final newX = currentTranslation.x + dx;
                     final newY = currentTranslation.y + dy;
                     final newZ = currentTranslation.z;
-                    
+
                     // Update translation in matrix
                     final newMatrix = Matrix4.copy(_matrix);
                     newMatrix.storage[12] = newX;
@@ -2366,7 +2548,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     newMatrix.storage[14] = newZ;
                     _matrix = newMatrix;
                   }
-                  
+
                   // Update state
                   _scale = newScale;
                   _lastFocalPoint = details.focalPoint;
@@ -2380,7 +2562,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               transform: _matrix,
               child: CustomPaint(
                 // Key includes note ID and current stroke point count to force repaint during drawing
-                key: ValueKey('canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}_${_textOnlyMode ? 'textOnly' : 'full'}'),
+                key: ValueKey(
+                  'canvas_${widget.noteId}_${isDark}_${_strokes.length}_${_textElements.length}_${_currentStroke?.points.length ?? 0}_${_textOnlyMode ? 'textOnly' : 'full'}',
+                ),
                 painter: _CanvasPainter(
                   // In text-only mode, don't render any strokes
                   _textOnlyMode ? const <Stroke>[] : _strokes,
@@ -2391,11 +2575,13 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 child: const SizedBox(width: 20000, height: 20000),
               ),
             ),
-            ),
           ),
+        ),
         Positioned.fill(
           child: IgnorePointer(
-            ignoring: _pointerCount >= 2, // Ignore when multi-touch to let GestureDetector handle it
+            ignoring:
+                _pointerCount >=
+                2, // Ignore when multi-touch to let GestureDetector handle it
             child: Listener(
               onPointerDown: (event) {
                 // CRITICAL: Don't interfere with multi-touch gestures - let GestureDetector handle them
@@ -2404,7 +2590,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   // Cancel any stroke that might have been started by the first touch
                   if (_currentStroke != null) {
                     setState(() {
-                      if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+                      if (_strokes.isNotEmpty &&
+                          _strokes.last == _currentStroke) {
                         _strokes.removeLast();
                       }
                       _currentStroke = null;
@@ -2412,300 +2599,334 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   }
                   return; // Let GestureDetector handle pinch zoom and two-finger pan
                 }
-              
-              // Don't intercept if text field is active
-              if (_activeTextElement != null) return;
-              
-              final isStylus = event.kind == ui.PointerDeviceKind.stylus || event.kind == ui.PointerDeviceKind.invertedStylus;
-              final isMouse = event.kind == ui.PointerDeviceKind.mouse;
-              final isTouch = event.kind == ui.PointerDeviceKind.touch;
-              
-              // If this is a touch event and there's already a current stroke, this might be the start of multi-touch
-              // Cancel the stroke to prevent dots from appearing
-              if (isTouch && _currentStroke != null && _pointerCount == 1) {
-                setState(() {
-                  if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
-                    _strokes.removeLast();
-                  }
-                  _currentStroke = null;
-                });
-                return; // Let GestureDetector handle multi-touch
-              }
-              
-              
-              // Check for right-click panning FIRST (before drawing)
-              // Note: buttons might not be set on onPointerDown, so we'll also check in onPointerMove
-              // But we can prevent stroke creation here if buttons is available
-              if (isMouse && event.buttons == 2) {
-                // Right-click panning - prevent drawing
-                setState(() {
-                  _isPanning = true;
-                  _panStartPosition = event.localPosition;
-                  _lastPanPosition = event.localPosition; // Initialize last position
-                  // Cancel any active stroke
-                  if (_currentStroke != null) {
-                    // Remove the stroke from strokes list if it was just added
-                    if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
+
+                // Don't intercept if text field is active
+                if (_activeTextElement != null) return;
+
+                final isStylus =
+                    event.kind == ui.PointerDeviceKind.stylus ||
+                    event.kind == ui.PointerDeviceKind.invertedStylus;
+                final isMouse = event.kind == ui.PointerDeviceKind.mouse;
+                final isTouch = event.kind == ui.PointerDeviceKind.touch;
+
+                // If this is a touch event and there's already a current stroke, this might be the start of multi-touch
+                // Cancel the stroke to prevent dots from appearing
+                if (isTouch && _currentStroke != null && _pointerCount == 1) {
+                  setState(() {
+                    if (_strokes.isNotEmpty &&
+                        _strokes.last == _currentStroke) {
                       _strokes.removeLast();
                     }
                     _currentStroke = null;
-                  }
-                });
-                return;
-              }
-              
-              // Don't start drawing if we're panning
-              if (_isPanning) {
-                return;
-              }
-              
-              // Allow touch drawing on Android - only pan with two fingers or long press
-              // In text-only mode, disable all drawing and only allow text interactions below
-              if (!_textOnlyMode && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
-                // Double-check we're not panning (buttons might not have been set on down)
+                  });
+                  return; // Let GestureDetector handle multi-touch
+                }
+
+                // Check for right-click panning FIRST (before drawing)
+                // Note: buttons might not be set on onPointerDown, so we'll also check in onPointerMove
+                // But we can prevent stroke creation here if buttons is available
                 if (isMouse && event.buttons == 2) {
+                  // Right-click panning - prevent drawing
                   setState(() {
                     _isPanning = true;
                     _panStartPosition = event.localPosition;
-                    _lastPanPosition = event.localPosition; // Initialize last position
-                    _currentStroke = null;
+                    _lastPanPosition =
+                        event.localPosition; // Initialize last position
+                    // Cancel any active stroke
+                    if (_currentStroke != null) {
+                      // Remove the stroke from strokes list if it was just added
+                      if (_strokes.isNotEmpty &&
+                          _strokes.last == _currentStroke) {
+                        _strokes.removeLast();
+                      }
+                      _currentStroke = null;
+                    }
                   });
                   return;
                 }
-                
-                final local = _transformToLocal(event.localPosition);
-                final brightness = Theme.of(context).brightness;
-                final isDark = brightness == Brightness.dark;
-                final eraserColor = isDark ? const Color(0xFF121212) : Colors.white;
-                
-                setState(() {
-                  final pressure = isStylus ? event.pressure : 0.5;
-                  // Eraser uses 2x pen size for easier erasing
-                  final effectivePenSize = _eraserMode ? _penSize * 2.0 : _penSize;
-                  _currentStroke = Stroke(
-                    [Point(local, pressure)], 
-                    color: _eraserMode ? eraserColor : _selectedColor,
-                    penSize: effectivePenSize,
-                  );
-                  _drawingIndicatorPosition = event.localPosition;
-                  _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
-                  _strokes.add(_currentStroke!);
-                  _redoStack.clear();
-                  _saveCurrentData();
-                });
-              } else if ((isMouse || isTouch) && (_textMode || _textOnlyMode)) {
-                // Click/tap to place text cursor or edit existing text
-                final local = _transformToLocal(event.localPosition);
-                
-                // Check if clicking on an existing text element
-                int? clickedTextIndex;
-                // Get text color from theme
-                final brightness = Theme.of(context).brightness;
-                final isDark = brightness == Brightness.dark;
-                final textColor = isDark ? Colors.white : Colors.black;
-                for (int i = _textElements.length - 1; i >= 0; i--) {
-                  if (_textElements[i].hitTest(local, fontSize: _textFontSize, textColor: textColor)) {
-                    clickedTextIndex = i;
-                    break;
-                  }
+
+                // Don't start drawing if we're panning
+                if (_isPanning) {
+                  return;
                 }
-                
-                setState(() {
-                  if (clickedTextIndex != null) {
-                    // Edit existing text element
-                    _editingTextElementIndex = clickedTextIndex;
-                    _activeTextElement = TextElement(
-                      _textElements[clickedTextIndex].position,
-                      _textElements[clickedTextIndex].text,
+
+                // Allow touch drawing on Android - only pan with two fingers or long press
+                // In text-only mode, disable all drawing and only allow text interactions below
+                if (!_textOnlyMode &&
+                    (isStylus ||
+                        (isMouse && !_textMode) ||
+                        (isTouch && !_textMode))) {
+                  // Double-check we're not panning (buttons might not have been set on down)
+                  if (isMouse && event.buttons == 2) {
+                    setState(() {
+                      _isPanning = true;
+                      _panStartPosition = event.localPosition;
+                      _lastPanPosition =
+                          event.localPosition; // Initialize last position
+                      _currentStroke = null;
+                    });
+                    return;
+                  }
+
+                  final local = _transformToLocal(event.localPosition);
+                  final brightness = Theme.of(context).brightness;
+                  final isDark = brightness == Brightness.dark;
+                  final eraserColor = isDark
+                      ? const Color(0xFF121212)
+                      : Colors.white;
+
+                  setState(() {
+                    final pressure = isStylus ? event.pressure : 0.5;
+                    // Eraser uses 2x pen size for easier erasing
+                    final effectivePenSize = _eraserMode
+                        ? _penSize * 2.0
+                        : _penSize;
+                    _currentStroke = Stroke(
+                      [Point(local, pressure)],
+                      color: _eraserMode ? eraserColor : _selectedColor,
+                      penSize: effectivePenSize,
                     );
-                    _textController.text = _textElements[clickedTextIndex].text;
-                  } else {
-                    // Create new text element
-                    _editingTextElementIndex = null;
-                    _activeTextElement = TextElement(local, '');
-                    _textController.clear();
-                  }
-                  // Track when text element was created to prevent immediate dismissal
-                  _textElementCreatedAt = DateTime.now();
-                  _textElementHasBeenFocused = false; // Reset focus tracking
-                });
-                
-                // Request focus using post-frame callback to ensure widget is built and stable
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  // Use a small delay to ensure the TextField widget is fully built
-                  Future.delayed(const Duration(milliseconds: 100), () {
-                    if (mounted && _activeTextElement != null) {
-                      _textFocusNode.requestFocus();
-                      // Mark as focused after a short delay to ensure focus is actually set
-                      Future.delayed(const Duration(milliseconds: 150), () {
-                        if (mounted && _activeTextElement != null && _textFocusNode.hasFocus) {
-                          setState(() {
-                            _textElementHasBeenFocused = true;
-                          });
-                        } else {
-                          // Retry focus request if it failed
-                          if (mounted && _activeTextElement != null && !_textFocusNode.hasFocus) {
-                            _textFocusNode.requestFocus();
-                          }
-                        }
-                      });
-                      // Move cursor to end of text when editing
-                      if (_editingTextElementIndex != null) {
-                        _textController.selection = TextSelection.fromPosition(
-                          TextPosition(offset: _textController.text.length),
-                        );
-                      }
-                    } else {
-                    }
-                  });
-                });
-              }
-            },
-            onPointerMove: (event) {
-              // CRITICAL: Don't interfere with multi-touch gestures - let GestureDetector handle them
-              // Check pointer count FIRST before doing anything else
-              if (_pointerCount >= 2) {
-                return; // Let GestureDetector handle pinch zoom and two-finger pan
-              }
-              
-              // Don't intercept if text field is active
-              if (_activeTextElement != null) return;
-              
-              final isStylus = event.kind == ui.PointerDeviceKind.stylus || event.kind == ui.PointerDeviceKind.invertedStylus;
-              final isMouse = event.kind == ui.PointerDeviceKind.mouse;
-              final isTouch = event.kind == ui.PointerDeviceKind.touch;
-              
-              
-              // Check for right-click panning (buttons == 2 means right mouse button)
-              if (isMouse && event.buttons == 2 && !_isPanning) {
-                // Start right-click panning
-                setState(() {
-                  _isPanning = true;
-                  _panStartPosition = event.localPosition;
-                  _lastPanPosition = event.localPosition; // Initialize last position
-                  // Cancel any active stroke that might have been created
-                  if (_currentStroke != null) {
-                    // Remove the stroke from strokes list if it was just added
-                    if (_strokes.isNotEmpty && _strokes.last == _currentStroke) {
-                      _strokes.removeLast();
-                    }
-                    _currentStroke = null;
-                  }
-                });
-                // Don't return - continue to panning handling below so first move is processed
-              }
-              
-              // Lock canvas position when text box is active
-              if (_activeTextElement != null && _isPanning) {
-                // Cancel panning if text box is active
-                setState(() {
-                  _isPanning = false;
-                  _panStartPosition = null;
-                  _lastPanPosition = null;
-                });
-                return;
-              }
-              
-              // Handle panning (right-click mouse or two-finger touch via GestureDetector)
-              // Use the same approach as two-finger panning: calculate delta from previous position
-              if (_isPanning && _lastPanPosition != null) {
-                // Calculate delta from the previous position (like two-finger panning does)
-                final dx = event.localPosition.dx - _lastPanPosition!.dx;
-                final dy = event.localPosition.dy - _lastPanPosition!.dy;
-                final translationBefore = _matrix.getTranslation();
-                
-                // Validate delta before applying (prevent NaN or infinite values)
-                if (dx.isFinite && dy.isFinite && !dx.isNaN && !dy.isNaN) {
-                  setState(() {
-                    // Manually update translation by extracting current translation, adding delta, and setting it back
-                    // This ensures proper accumulation regardless of other transformations in the matrix
-                    final currentTranslation = _matrix.getTranslation();
-                    final newX = currentTranslation.x + dx;
-                    final newY = currentTranslation.y + dy;
-                    final newZ = currentTranslation.z;
-                    
-                    // Create a new matrix with the updated translation
-                    // Preserve scale and rotation by copying the matrix and then setting translation entries
-                    // Translation is stored in matrix storage[12] (x), storage[13] (y), storage[14] (z)
-                    final newMatrix = Matrix4.copy(_matrix);
-                    newMatrix.storage[12] = newX;  // x translation
-                    newMatrix.storage[13] = newY;  // y translation
-                    newMatrix.storage[14] = newZ;  // z translation
-                    _matrix = newMatrix;
-                    
-                    _lastPanPosition = event.localPosition; // Update last position for next frame
-                    final translationAfter = _matrix.getTranslation();
-                    // Don't save on every move to avoid performance issues
-                    // Save will happen on pointer up
-                  });
-                } else {
-                }
-                return;
-              }
-              
-              // If we were panning but buttons changed, stop panning
-              if (_isPanning && isMouse && event.buttons != 2) {
-                setState(() {
-                  _isPanning = false;
-                  _panStartPosition = null;
-                  _lastPanPosition = null;
-                  _saveCurrentData();
-                });
-                return;
-              }
-              
-              // Don't draw if we're panning
-              if (_isPanning) {
-                return;
-              }
-              
-              if (!_textOnlyMode && _currentStroke != null && (isStylus || (isMouse && !_textMode) || (isTouch && !_textMode))) {
-                final local = _transformToLocal(event.localPosition);
-                final pressure = isStylus ? event.pressure : 0.5;
-                // Add point and immediately trigger repaint for real-time drawing
-                _currentStroke!.points.add(Point(local, pressure));
-                
-                // Call setState immediately for real-time drawing
-                // Use a microtask to batch rapid updates slightly without visible delay
-                if (mounted) {
-                  setState(() {
                     _drawingIndicatorPosition = event.localPosition;
-                    // Trigger repaint - the point is already added above
-                    // Save data periodically during drawing (but not every frame for performance)
-                    if (_currentStroke!.points.length % 10 == 0) {
-                      _saveCurrentData();
+                    _undoStack.add(
+                      CanvasState(
+                        List.from(_strokes),
+                        List.from(_textElements),
+                      ),
+                    );
+                    _strokes.add(_currentStroke!);
+                    _redoStack.clear();
+                    _saveCurrentData();
+                  });
+                } else if ((isMouse || isTouch) &&
+                    (_textMode || _textOnlyMode)) {
+                  // Click/tap to place text cursor or edit existing text
+                  final local = _transformToLocal(event.localPosition);
+
+                  // Check if clicking on an existing text element
+                  int? clickedTextIndex;
+                  // Get text color from theme
+                  final brightness = Theme.of(context).brightness;
+                  final isDark = brightness == Brightness.dark;
+                  final textColor = isDark ? Colors.white : Colors.black;
+                  for (int i = _textElements.length - 1; i >= 0; i--) {
+                    if (_textElements[i].hitTest(
+                      local,
+                      fontSize: _textFontSize,
+                      textColor: textColor,
+                    )) {
+                      clickedTextIndex = i;
+                      break;
                     }
+                  }
+
+                  setState(() {
+                    if (clickedTextIndex != null) {
+                      // Edit existing text element
+                      _editingTextElementIndex = clickedTextIndex;
+                      _activeTextElement = TextElement(
+                        _textElements[clickedTextIndex].position,
+                        _textElements[clickedTextIndex].text,
+                      );
+                      _textController.text =
+                          _textElements[clickedTextIndex].text;
+                    } else {
+                      // Create new text element
+                      _editingTextElementIndex = null;
+                      _activeTextElement = TextElement(local, '');
+                      _textController.clear();
+                    }
+                    // Track when text element was created to prevent immediate dismissal
+                    _textElementCreatedAt = DateTime.now();
+                    _textElementHasBeenFocused = false; // Reset focus tracking
+                  });
+
+                  // Request focus using post-frame callback to ensure widget is built and stable
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    // Use a small delay to ensure the TextField widget is fully built
+                    Future.delayed(const Duration(milliseconds: 100), () {
+                      if (mounted && _activeTextElement != null) {
+                        _textFocusNode.requestFocus();
+                        // Mark as focused after a short delay to ensure focus is actually set
+                        Future.delayed(const Duration(milliseconds: 150), () {
+                          if (mounted &&
+                              _activeTextElement != null &&
+                              _textFocusNode.hasFocus) {
+                            setState(() {
+                              _textElementHasBeenFocused = true;
+                            });
+                          } else {
+                            // Retry focus request if it failed
+                            if (mounted &&
+                                _activeTextElement != null &&
+                                !_textFocusNode.hasFocus) {
+                              _textFocusNode.requestFocus();
+                            }
+                          }
+                        });
+                        // Move cursor to end of text when editing
+                        if (_editingTextElementIndex != null) {
+                          _textController
+                              .selection = TextSelection.fromPosition(
+                            TextPosition(offset: _textController.text.length),
+                          );
+                        }
+                      } else {}
+                    });
                   });
                 }
-              }
-            },
-            onPointerUp: (event) {
-              
-              // End panning if active
-              if (_isPanning) {
-                setState(() {
-                  _isPanning = false;
-                  _panStartPosition = null;
-                  _lastPanPosition = null;
+              },
+              onPointerMove: (event) {
+                // CRITICAL: Don't interfere with multi-touch gestures - let GestureDetector handle them
+                // Check pointer count FIRST before doing anything else
+                if (_pointerCount >= 2) {
+                  return; // Let GestureDetector handle pinch zoom and two-finger pan
+                }
+
+                // Don't intercept if text field is active
+                if (_activeTextElement != null) return;
+
+                final isStylus =
+                    event.kind == ui.PointerDeviceKind.stylus ||
+                    event.kind == ui.PointerDeviceKind.invertedStylus;
+                final isMouse = event.kind == ui.PointerDeviceKind.mouse;
+                final isTouch = event.kind == ui.PointerDeviceKind.touch;
+
+                // Check for right-click panning (buttons == 2 means right mouse button)
+                if (isMouse && event.buttons == 2 && !_isPanning) {
+                  // Start right-click panning
+                  setState(() {
+                    _isPanning = true;
+                    _panStartPosition = event.localPosition;
+                    _lastPanPosition =
+                        event.localPosition; // Initialize last position
+                    // Cancel any active stroke that might have been created
+                    if (_currentStroke != null) {
+                      // Remove the stroke from strokes list if it was just added
+                      if (_strokes.isNotEmpty &&
+                          _strokes.last == _currentStroke) {
+                        _strokes.removeLast();
+                      }
+                      _currentStroke = null;
+                    }
+                  });
+                  // Don't return - continue to panning handling below so first move is processed
+                }
+
+                // Lock canvas position when text box is active
+                if (_activeTextElement != null && _isPanning) {
+                  // Cancel panning if text box is active
+                  setState(() {
+                    _isPanning = false;
+                    _panStartPosition = null;
+                    _lastPanPosition = null;
+                  });
+                  return;
+                }
+
+                // Handle panning (right-click mouse or two-finger touch via GestureDetector)
+                // Use the same approach as two-finger panning: calculate delta from previous position
+                if (_isPanning && _lastPanPosition != null) {
+                  // Calculate delta from the previous position (like two-finger panning does)
+                  final dx = event.localPosition.dx - _lastPanPosition!.dx;
+                  final dy = event.localPosition.dy - _lastPanPosition!.dy;
+                  final translationBefore = _matrix.getTranslation();
+
+                  // Validate delta before applying (prevent NaN or infinite values)
+                  if (dx.isFinite && dy.isFinite && !dx.isNaN && !dy.isNaN) {
+                    setState(() {
+                      // Manually update translation by extracting current translation, adding delta, and setting it back
+                      // This ensures proper accumulation regardless of other transformations in the matrix
+                      final currentTranslation = _matrix.getTranslation();
+                      final newX = currentTranslation.x + dx;
+                      final newY = currentTranslation.y + dy;
+                      final newZ = currentTranslation.z;
+
+                      // Create a new matrix with the updated translation
+                      // Preserve scale and rotation by copying the matrix and then setting translation entries
+                      // Translation is stored in matrix storage[12] (x), storage[13] (y), storage[14] (z)
+                      final newMatrix = Matrix4.copy(_matrix);
+                      newMatrix.storage[12] = newX; // x translation
+                      newMatrix.storage[13] = newY; // y translation
+                      newMatrix.storage[14] = newZ; // z translation
+                      _matrix = newMatrix;
+
+                      _lastPanPosition = event
+                          .localPosition; // Update last position for next frame
+                      final translationAfter = _matrix.getTranslation();
+                      // Don't save on every move to avoid performance issues
+                      // Save will happen on pointer up
+                    });
+                  } else {}
+                  return;
+                }
+
+                // If we were panning but buttons changed, stop panning
+                if (_isPanning && isMouse && event.buttons != 2) {
+                  setState(() {
+                    _isPanning = false;
+                    _panStartPosition = null;
+                    _lastPanPosition = null;
+                    _saveCurrentData();
+                  });
+                  return;
+                }
+
+                // Don't draw if we're panning
+                if (_isPanning) {
+                  return;
+                }
+
+                if (!_textOnlyMode &&
+                    _currentStroke != null &&
+                    (isStylus ||
+                        (isMouse && !_textMode) ||
+                        (isTouch && !_textMode))) {
+                  final local = _transformToLocal(event.localPosition);
+                  final pressure = isStylus ? event.pressure : 0.5;
+                  // Add point and immediately trigger repaint for real-time drawing
+                  _currentStroke!.points.add(Point(local, pressure));
+
+                  // Call setState immediately for real-time drawing
+                  // Use a microtask to batch rapid updates slightly without visible delay
+                  if (mounted) {
+                    setState(() {
+                      _drawingIndicatorPosition = event.localPosition;
+                      // Trigger repaint - the point is already added above
+                      // Save data periodically during drawing (but not every frame for performance)
+                      if (_currentStroke!.points.length % 10 == 0) {
+                        _saveCurrentData();
+                      }
+                    });
+                  }
+                }
+              },
+              onPointerUp: (event) {
+                // End panning if active
+                if (_isPanning) {
+                  setState(() {
+                    _isPanning = false;
+                    _panStartPosition = null;
+                    _lastPanPosition = null;
+                    _saveCurrentData();
+                  });
+                  // Don't process drawing if we were panning
+                  return;
+                }
+
+                if (_activeTextElement == null && _currentStroke != null) {
+                  // Always update on pointer up to ensure final point is drawn
+                  // For short strokes, ensure we save even if comparison might fail
+                  setState(() {
+                    _currentStroke = null;
+                    _drawingIndicatorPosition = null;
+                  });
+                  // Force save after setState to ensure the stroke is complete
+                  // This is critical for short strokes that might not trigger periodic saves
                   _saveCurrentData();
-                });
-                // Don't process drawing if we were panning
-                return;
-              }
-              
-              if (_activeTextElement == null && _currentStroke != null) {
-                // Always update on pointer up to ensure final point is drawn
-                // For short strokes, ensure we save even if comparison might fail
-                setState(() {
-                  _currentStroke = null;
-                  _drawingIndicatorPosition = null;
-                });
-                // Force save after setState to ensure the stroke is complete
-                // This is critical for short strokes that might not trigger periodic saves
-                _saveCurrentData();
-              }
-            },
-            behavior: HitTestBehavior.translucent, // Allow events to pass through to GestureDetector below
+                }
+              },
+              behavior: HitTestBehavior
+                  .translucent, // Allow events to pass through to GestureDetector below
             ),
           ),
         ),
@@ -2724,7 +2945,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 child: IconButton(
                   icon: Icon(_showToolMenu ? Icons.close : Icons.build),
                   tooltip: _showToolMenu ? 'Close Toolbox' : 'Open Toolbox',
-                  onPressed: () => setState(() => _showToolMenu = !_showToolMenu),
+                  onPressed: () =>
+                      setState(() => _showToolMenu = !_showToolMenu),
                 ),
               ),
               // Collapsible menu items
@@ -2756,11 +2978,14 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   Material(
                     elevation: 4,
                     borderRadius: BorderRadius.circular(8),
-                    color: _eraserMode ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    color: _eraserMode
+                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                        : Colors.grey[700],
                     child: IconButton(
                       icon: const Icon(Icons.cleaning_services),
                       tooltip: _eraserMode ? 'Eraser (Active)' : 'Eraser',
-                      onPressed: () => setState(() => _eraserMode = !_eraserMode),
+                      onPressed: () =>
+                          setState(() => _eraserMode = !_eraserMode),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -2773,7 +2998,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       : Colors.grey[700],
                   child: IconButton(
                     icon: const Icon(Icons.text_fields),
-                    tooltip: _textMode && !_textOnlyMode ? 'Text Mode (Active)' : 'Text Mode',
+                    tooltip: _textMode && !_textOnlyMode
+                        ? 'Text Mode (Active)'
+                        : 'Text Mode',
                     onPressed: () => setState(() {
                       // Turning text mode on always disables eraser
                       _textMode = !_textMode;
@@ -2793,11 +3020,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   Material(
                     elevation: 4,
                     borderRadius: BorderRadius.circular(8),
-                    color: _showColorPicker ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    color: _showColorPicker
+                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                        : Colors.grey[700],
                     child: IconButton(
                       icon: const Icon(Icons.palette),
-                      tooltip: _showColorPicker ? 'Color Picker (Open)' : 'Color Picker',
-                      onPressed: () => setState(() => _showColorPicker = !_showColorPicker),
+                      tooltip: _showColorPicker
+                          ? 'Color Picker (Open)'
+                          : 'Color Picker',
+                      onPressed: () =>
+                          setState(() => _showColorPicker = !_showColorPicker),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -2805,11 +3037,17 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   Material(
                     elevation: 4,
                     borderRadius: BorderRadius.circular(8),
-                    color: _showPenSizeControl ? Theme.of(context).colorScheme.primary.withOpacity(0.3) : Colors.grey[700],
+                    color: _showPenSizeControl
+                        ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
+                        : Colors.grey[700],
                     child: IconButton(
                       icon: const Icon(Icons.edit),
-                      tooltip: _showPenSizeControl ? 'Hide Pen Size' : 'Show Pen Size',
-                      onPressed: () => setState(() => _showPenSizeControl = !_showPenSizeControl),
+                      tooltip: _showPenSizeControl
+                          ? 'Hide Pen Size'
+                          : 'Show Pen Size',
+                      onPressed: () => setState(
+                        () => _showPenSizeControl = !_showPenSizeControl,
+                      ),
                     ),
                   ),
                   // Collapsible pen size control
@@ -2820,7 +3058,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       borderRadius: BorderRadius.circular(8),
                       color: Colors.grey[700],
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                         width: 200,
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
@@ -2875,13 +3116,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
           Builder(
             builder: (context) {
               final screenSize = MediaQuery.of(context).size;
-              final isMobile = Platform.isAndroid || Platform.isIOS || screenSize.width < 600;
-              
+              final isMobile =
+                  Platform.isAndroid ||
+                  Platform.isIOS ||
+                  screenSize.width < 600;
+
               // Adjust size and position for mobile
               final pickerWidth = isMobile ? 280.0 : 350.0;
               final pickerPadding = isMobile ? 8.0 : 12.0;
               final containerWidth = pickerWidth + (pickerPadding * 2);
-              
+
               return Positioned(
                 top: MediaQuery.of(context).padding.top + (isMobile ? 80 : 16),
                 right: isMobile ? 8 : 80,
@@ -2915,10 +3159,14 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                   child: TextButton.icon(
                                     icon: const Icon(Icons.grid_view, size: 18),
                                     label: const Text('Presets'),
-                                    onPressed: () => setState(() => _useColorWheel = false),
+                                    onPressed: () =>
+                                        setState(() => _useColorWheel = false),
                                     style: TextButton.styleFrom(
                                       backgroundColor: !_useColorWheel
-                                          ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                          ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withOpacity(0.2)
                                           : null,
                                     ),
                                   ),
@@ -2926,12 +3174,19 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: TextButton.icon(
-                                    icon: const Icon(Icons.color_lens, size: 18),
+                                    icon: const Icon(
+                                      Icons.color_lens,
+                                      size: 18,
+                                    ),
                                     label: const Text('Custom'),
-                                    onPressed: () => setState(() => _useColorWheel = true),
+                                    onPressed: () =>
+                                        setState(() => _useColorWheel = true),
                                     style: TextButton.styleFrom(
                                       backgroundColor: _useColorWheel
-                                          ? Theme.of(context).colorScheme.primary.withOpacity(0.2)
+                                          ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withOpacity(0.2)
                                           : null,
                                     ),
                                   ),
@@ -2940,55 +3195,64 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                             ),
                           ),
                           // Color picker widget (BlockPicker or ColorPicker)
-                        _useColorWheel
-                            ? MediaQuery(
-                                // Override MediaQuery to give ColorPicker a fixed width context
-                                // This prevents it from reacting to window width changes
-                                data: MediaQuery.of(context).copyWith(
-                                  size: Size(pickerWidth, isMobile ? 400 : 600),
-                                ),
-                                child: ClipRect(
-                                  child: SizedBox(
-                                    width: pickerWidth,
-                                    child: ColorPicker(
-                                      pickerColor: _selectedColor,
-                                      onColorChanged: (color) {
-                                        setState(() {
-                                          _selectedColor = color;
-                                        });
-                                      },
-                                      enableAlpha: false,
-                                      displayThumbColor: true,
-                                      paletteType: PaletteType.hslWithSaturation,
-                                      pickerAreaHeightPercent: isMobile ? 0.5 : 0.6,
+                          _useColorWheel
+                              ? MediaQuery(
+                                  // Override MediaQuery to give ColorPicker a fixed width context
+                                  // This prevents it from reacting to window width changes
+                                  data: MediaQuery.of(context).copyWith(
+                                    size: Size(
+                                      pickerWidth,
+                                      isMobile ? 400 : 600,
                                     ),
                                   ),
-                                ),
-                              )
-                            : MediaQuery(
-                                // Override MediaQuery to give BlockPicker a fixed width context
-                                // This prevents it from reacting to window width changes
-                                data: MediaQuery.of(context).copyWith(
-                                  size: Size(pickerWidth, isMobile ? 400 : 600),
-                                ),
-                                child: ClipRect(
-                                  child: SizedBox(
-                                    width: pickerWidth,
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      widthFactor: 1.0,
-                                      child: BlockPicker(
+                                  child: ClipRect(
+                                    child: SizedBox(
+                                      width: pickerWidth,
+                                      child: ColorPicker(
                                         pickerColor: _selectedColor,
                                         onColorChanged: (color) {
                                           setState(() {
                                             _selectedColor = color;
                                           });
                                         },
+                                        enableAlpha: false,
+                                        displayThumbColor: true,
+                                        paletteType:
+                                            PaletteType.hslWithSaturation,
+                                        pickerAreaHeightPercent: isMobile
+                                            ? 0.5
+                                            : 0.6,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : MediaQuery(
+                                  // Override MediaQuery to give BlockPicker a fixed width context
+                                  // This prevents it from reacting to window width changes
+                                  data: MediaQuery.of(context).copyWith(
+                                    size: Size(
+                                      pickerWidth,
+                                      isMobile ? 400 : 600,
+                                    ),
+                                  ),
+                                  child: ClipRect(
+                                    child: SizedBox(
+                                      width: pickerWidth,
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        widthFactor: 1.0,
+                                        child: BlockPicker(
+                                          pickerColor: _selectedColor,
+                                          onColorChanged: (color) {
+                                            setState(() {
+                                              _selectedColor = color;
+                                            });
+                                          },
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
                           const SizedBox(height: 8),
                           SizedBox(
                             width: pickerWidth,
@@ -2998,7 +3262,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                 TextButton.icon(
                                   icon: const Icon(Icons.check, size: 18),
                                   label: const Text('Done'),
-                                  onPressed: () => setState(() => _showColorPicker = false),
+                                  onPressed: () =>
+                                      setState(() => _showColorPicker = false),
                                 ),
                               ],
                             ),
@@ -3014,7 +3279,11 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         // Font size adjuster (shown when in text mode and menu is open)
         if (_textMode && _showToolMenu)
           Positioned(
-            top: MediaQuery.of(context).padding.top + 16 + 48 + 8, // Align with top of first menu button (toggle button height + spacing)
+            top:
+                MediaQuery.of(context).padding.top +
+                16 +
+                48 +
+                8, // Align with top of first menu button (toggle button height + spacing)
             right: 80,
             child: Material(
               elevation: 8,
@@ -3062,7 +3331,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                           icon: const Icon(Icons.remove),
                           onPressed: () {
                             setState(() {
-                              _textFontSize = (_textFontSize - 1).clamp(8.0, 48.0);
+                              _textFontSize = (_textFontSize - 1).clamp(
+                                8.0,
+                                48.0,
+                              );
                             });
                           },
                         ),
@@ -3078,7 +3350,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                           icon: const Icon(Icons.add),
                           onPressed: () {
                             setState(() {
-                              _textFontSize = (_textFontSize + 1).clamp(8.0, 48.0);
+                              _textFontSize = (_textFontSize + 1).clamp(
+                                8.0,
+                                48.0,
+                              );
                             });
                           },
                         ),
@@ -3099,32 +3374,45 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
                 onTap: () {
-                  
                   // Prevent dismissal if text element was just created (within last 1500ms to be safe)
                   final now = DateTime.now();
                   if (_textElementCreatedAt != null) {
-                    final timeSinceCreation = now.difference(_textElementCreatedAt!).inMilliseconds;
+                    final timeSinceCreation = now
+                        .difference(_textElementCreatedAt!)
+                        .inMilliseconds;
                     if (timeSinceCreation < 1500) {
                       return; // Don't dismiss if just created
                     }
                   }
-                  
+
                   // Only dismiss if:
                   // 1. The text element has been focused at least once (to avoid dismissing before focus is set)
                   // 2. Focus is not currently active (user clicked outside after focusing)
                   if (_textElementHasBeenFocused && !_textFocusNode.hasFocus) {
                     setState(() {
-                      if (_textController.text.isNotEmpty && _activeTextElement != null) {
-                        _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+                      if (_textController.text.isNotEmpty &&
+                          _activeTextElement != null) {
+                        _undoStack.add(
+                          CanvasState(
+                            List.from(_strokes),
+                            List.from(_textElements),
+                          ),
+                        );
                         if (_editingTextElementIndex != null) {
                           // Update existing text element
-                          _textElements[_editingTextElementIndex!] = TextElement(
-                            _activeTextElement!.position,
-                            _textController.text,
-                          );
+                          _textElements[_editingTextElementIndex!] =
+                              TextElement(
+                                _activeTextElement!.position,
+                                _textController.text,
+                              );
                         } else {
                           // Add new text element
-                          _textElements.add(TextElement(_activeTextElement!.position, _textController.text));
+                          _textElements.add(
+                            TextElement(
+                              _activeTextElement!.position,
+                              _textController.text,
+                            ),
+                          );
                         }
                         _redoStack.clear();
                         _saveCurrentData();
@@ -3136,8 +3424,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       _textElementHasBeenFocused = false;
                       _textFocusNode.unfocus();
                     });
-                  } else {
-                  }
+                  } else {}
                 },
                 child: Container(color: Colors.transparent),
               ),
@@ -3146,16 +3433,26 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
         // Drawing indicator circle
         if (_drawingIndicatorPosition != null && _currentStroke != null)
           Positioned(
-            left: _drawingIndicatorPosition!.dx - (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
-            top: _drawingIndicatorPosition!.dy - (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
+            left:
+                _drawingIndicatorPosition!.dx -
+                (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
+            top:
+                _drawingIndicatorPosition!.dy -
+                (_eraserMode ? _penSize * 2.0 : _penSize) * 0.5,
             child: IgnorePointer(
               child: Container(
-                width: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(4.0, 50.0),
-                height: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(4.0, 50.0),
+                width: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(
+                  4.0,
+                  50.0,
+                ),
+                height: (_eraserMode ? _penSize * 2.0 : _penSize).clamp(
+                  4.0,
+                  50.0,
+                ),
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(
-                    color: _eraserMode 
+                    color: _eraserMode
                         ? Theme.of(context).colorScheme.error.withOpacity(0.8)
                         : _selectedColor.withOpacity(0.8),
                     width: 2,
@@ -3182,7 +3479,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                       borderRadius: BorderRadius.circular(4),
                       color: Theme.of(context).colorScheme.surface,
                       child: Container(
-                        constraints: const BoxConstraints(minWidth: 200, maxWidth: 400),
+                        constraints: const BoxConstraints(
+                          minWidth: 200,
+                          maxWidth: 400,
+                        ),
                         decoration: BoxDecoration(
                           color: Theme.of(context).colorScheme.surface,
                           border: Border.all(
@@ -3191,7 +3491,10 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                           ),
                           borderRadius: BorderRadius.circular(4),
                         ),
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3199,16 +3502,18 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                             Shortcuts(
                               shortcuts: {
                                 // Enter key submits (without Shift)
-                                const SingleActivator(LogicalKeyboardKey.enter): const _SubmitTextIntent(),
+                                const SingleActivator(LogicalKeyboardKey.enter):
+                                    const _SubmitTextIntent(),
                               },
                               child: Actions(
                                 actions: {
-                                  _SubmitTextIntent: CallbackAction<_SubmitTextIntent>(
-                                    onInvoke: (intent) {
-                                      _submitText();
-                                      return null;
-                                    },
-                                  ),
+                                  _SubmitTextIntent:
+                                      CallbackAction<_SubmitTextIntent>(
+                                        onInvoke: (intent) {
+                                          _submitText();
+                                          return null;
+                                        },
+                                      ),
                                 },
                                 child: TextField(
                                   controller: _textController,
@@ -3218,23 +3523,33 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                                   textInputAction: TextInputAction.newline,
                                   maxLines: null,
                                   minLines: 1,
-                              style: TextStyle(
-                                fontSize: _textFontSize,
-                                color: Theme.of(context).colorScheme.onSurface,
-                              ),
-                              decoration: InputDecoration(
-                                border: InputBorder.none,
-                                hintText: 'Type here... (Shift+Enter for new line)',
-                                hintStyle: TextStyle(
-                                  color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
-                                ),
+                                  style: TextStyle(
+                                    fontSize: _textFontSize,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.onSurface,
+                                  ),
+                                  decoration: InputDecoration(
+                                    border: InputBorder.none,
+                                    hintText:
+                                        'Type here... (Shift+Enter for new line)',
+                                    hintStyle: TextStyle(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onSurface.withOpacity(0.6),
+                                    ),
                                     isDense: true,
-                                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      vertical: 8,
+                                    ),
                                   ),
                                   onChanged: (value) {
                                     setState(() {
                                       if (_activeTextElement != null) {
-                                        _activeTextElement = TextElement(_activeTextElement!.position, value);
+                                        _activeTextElement = TextElement(
+                                          _activeTextElement!.position,
+                                          value,
+                                        );
                                       }
                                     });
                                   },
@@ -3248,7 +3563,9 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.grey[700]!,
                                 foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(4),
                                 ),
@@ -3277,13 +3594,24 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               final maxHeight = screenSize.height * 0.25;
               // Ensure we leave space for buttons on the right (at least 100px)
               final availableWidth = screenSize.width - 100;
-              final availableHeight = screenSize.height - padding.bottom - 32; // 16px bottom + 16px margin
-              final minimapWidth = (maxWidth < availableWidth ? maxWidth : availableWidth).clamp(120.0, 300.0);
-              final minimapHeight = (maxHeight < availableHeight ? maxHeight : availableHeight).clamp(120.0, 300.0);
+              final availableHeight =
+                  screenSize.height -
+                  padding.bottom -
+                  32; // 16px bottom + 16px margin
+              final minimapWidth =
+                  (maxWidth < availableWidth ? maxWidth : availableWidth).clamp(
+                    120.0,
+                    300.0,
+                  );
+              final minimapHeight =
+                  (maxHeight < availableHeight ? maxHeight : availableHeight)
+                      .clamp(120.0, 300.0);
               final minimapSize = Size(minimapWidth, minimapHeight);
-              
+
               return Positioned(
-                bottom: padding.bottom + 48, // Increased to 48 to better avoid gesture bar on Android
+                bottom:
+                    padding.bottom +
+                    48, // Increased to 48 to better avoid gesture bar on Android
                 right: 16,
                 child: _MinimapWidget(
                   size: minimapSize,
@@ -3298,29 +3626,29 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     final scaleX = minimapSize.width / contentBounds.width;
                     final scaleY = minimapSize.height / contentBounds.height;
                     final scale = scaleX < scaleY ? scaleX : scaleY;
-                    
+
                     // Calculate offset to center content in minimap
                     final offsetX = -contentBounds.left * scale;
                     final offsetY = -contentBounds.top * scale;
-                    
+
                     // Convert minimap click position to canvas coordinates
                     final canvasX = (localPoint.dx - offsetX) / scale;
                     final canvasY = (localPoint.dy - offsetY) / scale;
                     final canvasPoint = Offset(canvasX, canvasY);
-                    
+
                     // Center the viewport on this canvas point
                     final targetTranslation = vm.Vector3(
                       screenSize.width / 2 - canvasPoint.dx,
                       screenSize.height / 2 - canvasPoint.dy,
                       0,
                     );
-                    
+
                     setState(() {
                       final currentTranslation = _matrix.getTranslation();
                       final newX = targetTranslation.x;
                       final newY = targetTranslation.y;
                       final newZ = currentTranslation.z;
-                      
+
                       final newMatrix = Matrix4.copy(_matrix);
                       newMatrix.storage[12] = newX;
                       newMatrix.storage[13] = newY;
@@ -3336,7 +3664,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
       ],
     );
   }
-  
+
   @override
   void dispose() {
     _textFocusNode.dispose();
@@ -3358,10 +3686,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   void undo() {
     if (_undoStack.isNotEmpty) {
       setState(() {
-        _redoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+        _redoStack.add(
+          CanvasState(List.from(_strokes), List.from(_textElements)),
+        );
         final state = _undoStack.removeLast();
-        _strokes..clear()..addAll(state.strokes);
-        _textElements..clear()..addAll(state.textElements);
+        _strokes
+          ..clear()
+          ..addAll(state.strokes);
+        _textElements
+          ..clear()
+          ..addAll(state.textElements);
         _saveCurrentData();
       });
     }
@@ -3370,10 +3704,16 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
   void redo() {
     if (_redoStack.isNotEmpty) {
       setState(() {
-        _undoStack.add(CanvasState(List.from(_strokes), List.from(_textElements)));
+        _undoStack.add(
+          CanvasState(List.from(_strokes), List.from(_textElements)),
+        );
         final state = _redoStack.removeLast();
-        _strokes..clear()..addAll(state.strokes);
-        _textElements..clear()..addAll(state.textElements);
+        _strokes
+          ..clear()
+          ..addAll(state.strokes);
+        _textElements
+          ..clear()
+          ..addAll(state.textElements);
         _saveCurrentData();
       });
     }
@@ -3392,17 +3732,17 @@ class NoteCanvasData {
   final List<TextElement> textElements;
   final Matrix4 matrix;
   final double scale;
-  
+
   NoteCanvasData({
     List<Stroke>? strokes,
     List<TextElement>? textElements,
     Matrix4? matrix,
     double? scale,
-  })  : strokes = strokes ?? [],
-        textElements = textElements ?? [],
-        matrix = matrix ?? Matrix4.identity(),
-        scale = scale ?? 1.0;
-  
+  }) : strokes = strokes ?? [],
+       textElements = textElements ?? [],
+       matrix = matrix ?? Matrix4.identity(),
+       scale = scale ?? 1.0;
+
   NoteCanvasData copy() {
     return NoteCanvasData(
       strokes: List.from(strokes),
@@ -3411,7 +3751,7 @@ class NoteCanvasData {
       scale: scale,
     );
   }
-  
+
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
@@ -3420,7 +3760,7 @@ class NoteCanvasData {
         other.textElements.length == textElements.length &&
         other.scale == scale;
   }
-  
+
   @override
   int get hashCode => Object.hash(strokes.length, textElements.length, scale);
 }
@@ -3435,9 +3775,9 @@ class Stroke {
   final List<Point> points;
   final Color color;
   final double penSize;
-  Stroke(this.points, {Color? color, double? penSize}) 
-      : color = color ?? Colors.black,
-        penSize = penSize ?? 1.0;
+  Stroke(this.points, {Color? color, double? penSize})
+    : color = color ?? Colors.black,
+      penSize = penSize ?? 1.0;
 
   bool hitTest(Offset pos) {
     for (final p in points) {
@@ -3448,11 +3788,15 @@ class Stroke {
 
   Map<String, dynamic> toJson() {
     return {
-      'points': points.map((p) => {
-        'x': p.position.dx,
-        'y': p.position.dy,
-        'pressure': p.pressure,
-      }).toList(),
+      'points': points
+          .map(
+            (p) => {
+              'x': p.position.dx,
+              'y': p.position.dy,
+              'pressure': p.pressure,
+            },
+          )
+          .toList(),
       'color': color.value,
       'penSize': penSize,
     };
@@ -3460,10 +3804,14 @@ class Stroke {
 
   factory Stroke.fromJson(Map<String, dynamic> json) {
     final pointsData = json['points'] as List<dynamic>? ?? [];
-    final points = pointsData.map((p) => Point(
-      Offset((p['x'] as num).toDouble(), (p['y'] as num).toDouble()),
-      (p['pressure'] as num?)?.toDouble() ?? 0.5,
-    )).toList();
+    final points = pointsData
+        .map(
+          (p) => Point(
+            Offset((p['x'] as num).toDouble(), (p['y'] as num).toDouble()),
+            (p['pressure'] as num?)?.toDouble() ?? 0.5,
+          ),
+        )
+        .toList();
     final colorValue = json['color'] as int?;
     final color = colorValue != null ? Color(colorValue) : Colors.black;
     final penSize = (json['penSize'] as num?)?.toDouble() ?? 1.0;
@@ -3477,21 +3825,25 @@ class TextElement {
   TextElement(this.position, this.text);
 
   /// Check if a point is within the bounds of this text element
-  bool hitTest(Offset point, {required double fontSize, Color textColor = Colors.black}) {
+  bool hitTest(
+    Offset point, {
+    required double fontSize,
+    Color textColor = Colors.black,
+  }) {
     // Create a TextPainter to measure the text bounds (using markdown rendering for accurate size)
     final textPainter = TextPainter(
       text: _markdownToTextSpan(text, textColor, baseFontSize: fontSize),
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-    
+
     final textRect = Rect.fromLTWH(
       position.dx,
       position.dy,
       textPainter.width,
       textPainter.height,
     );
-    
+
     return textRect.contains(point);
   }
 
@@ -3513,18 +3865,25 @@ class TextElement {
 
 /// Convert markdown text to a styled TextSpan
 /// Supports: headers (#), bold (**text**), italic (*text*), inline code (`code`)
-TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseFontSize = 16.0}) {
+TextSpan _markdownToTextSpan(
+  String markdownText,
+  Color textColor, {
+  double baseFontSize = 16.0,
+}) {
   if (markdownText.isEmpty) {
-    return TextSpan(text: '', style: TextStyle(color: textColor, fontSize: baseFontSize));
+    return TextSpan(
+      text: '',
+      style: TextStyle(color: textColor, fontSize: baseFontSize),
+    );
   }
-  
+
   // Parse markdown using regex (simpler and more reliable for basic markdown)
   final lines = markdownText.split('\n');
-  
+
   // Use a regex-based approach: parse line by line and handle inline formatting
   List<TextSpan> children = [];
   final baseStyle = TextStyle(color: textColor, fontSize: baseFontSize);
-  
+
   // Process each line
   for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     String line = lines[lineIndex];
@@ -3534,41 +3893,60 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
       }
       continue;
     }
-    
+
     // Check for headers
     TextStyle lineStyle = baseStyle;
     if (line.startsWith('# ')) {
       line = line.substring(2);
-      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 2.0, fontWeight: FontWeight.bold);
+      lineStyle = baseStyle.copyWith(
+        fontSize: baseFontSize * 2.0,
+        fontWeight: FontWeight.bold,
+      );
     } else if (line.startsWith('## ')) {
       line = line.substring(3);
-      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.75, fontWeight: FontWeight.bold);
+      lineStyle = baseStyle.copyWith(
+        fontSize: baseFontSize * 1.75,
+        fontWeight: FontWeight.bold,
+      );
     } else if (line.startsWith('### ')) {
       line = line.substring(4);
-      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.5, fontWeight: FontWeight.bold);
+      lineStyle = baseStyle.copyWith(
+        fontSize: baseFontSize * 1.5,
+        fontWeight: FontWeight.bold,
+      );
     } else if (line.startsWith('#### ')) {
       line = line.substring(5);
-      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.25, fontWeight: FontWeight.bold);
+      lineStyle = baseStyle.copyWith(
+        fontSize: baseFontSize * 1.25,
+        fontWeight: FontWeight.bold,
+      );
     } else if (line.startsWith('##### ') || line.startsWith('###### ')) {
       line = line.replaceFirst(RegExp(r'^#{5,6} '), '');
-      lineStyle = baseStyle.copyWith(fontSize: baseFontSize * 1.1, fontWeight: FontWeight.bold);
+      lineStyle = baseStyle.copyWith(
+        fontSize: baseFontSize * 1.1,
+        fontWeight: FontWeight.bold,
+      );
     }
-    
+
     // Process inline formatting: **bold**, *italic*, `code`
     int pos = 0;
     while (pos < line.length) {
       // Check for bold **text** or __text__
-      final boldMatch = RegExp(r'\*\*(.+?)\*\*|__(.+?)__').firstMatch(line.substring(pos));
+      final boldMatch = RegExp(
+        r'\*\*(.+?)\*\*|__(.+?)__',
+      ).firstMatch(line.substring(pos));
       // Check for italic *text* or _text_ (but not **)
-      final italicMatch = RegExp(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)').firstMatch(line.substring(pos));
+      final italicMatch = RegExp(
+        r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)',
+      ).firstMatch(line.substring(pos));
       // Check for inline code `code`
       final codeMatch = RegExp(r'`(.+?)`').firstMatch(line.substring(pos));
-      
+
       // Find the earliest match
       int? earliestPos;
       String? matchType;
       String? matchText;
-      
+
       if (boldMatch != null) {
         final matchPos = pos + boldMatch.start;
         if (earliestPos == null || matchPos < earliestPos) {
@@ -3577,7 +3955,7 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
           matchText = boldMatch.group(1) ?? boldMatch.group(2) ?? '';
         }
       }
-      
+
       if (italicMatch != null) {
         final matchPos = pos + italicMatch.start;
         if (earliestPos == null || matchPos < earliestPos) {
@@ -3586,7 +3964,7 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
           matchText = italicMatch.group(1) ?? italicMatch.group(2) ?? '';
         }
       }
-      
+
       if (codeMatch != null) {
         final matchPos = pos + codeMatch.start;
         if (earliestPos == null || matchPos < earliestPos) {
@@ -3595,13 +3973,15 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
           matchText = codeMatch.group(1) ?? '';
         }
       }
-      
+
       if (earliestPos != null && matchType != null && matchText != null) {
         // Add text before the match
         if (earliestPos > pos) {
-          children.add(TextSpan(text: line.substring(pos, earliestPos), style: lineStyle));
+          children.add(
+            TextSpan(text: line.substring(pos, earliestPos), style: lineStyle),
+          );
         }
-        
+
         // Add the formatted text
         TextStyle formattedStyle = lineStyle;
         if (matchType == 'bold') {
@@ -3615,10 +3995,13 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
           );
         }
         children.add(TextSpan(text: matchText, style: formattedStyle));
-        
+
         // Move position past the match
-        final matchLength = matchType == 'bold' ? matchText.length + 4 : 
-                           matchType == 'code' ? matchText.length + 2 : matchText.length + 2;
+        final matchLength = matchType == 'bold'
+            ? matchText.length + 4
+            : matchType == 'code'
+            ? matchText.length + 2
+            : matchText.length + 2;
         pos = earliestPos + matchLength;
       } else {
         // No more matches, add remaining text
@@ -3626,18 +4009,18 @@ TextSpan _markdownToTextSpan(String markdownText, Color textColor, {double baseF
         break;
       }
     }
-    
+
     // Add newline after each line (except last)
     if (lineIndex < lines.length - 1) {
       children.add(TextSpan(text: '\n', style: baseStyle));
     }
   }
-  
+
   // If no children were created, return simple TextSpan
   if (children.isEmpty) {
     return TextSpan(text: markdownText, style: baseStyle);
   }
-  
+
   return TextSpan(children: children, style: baseStyle);
 }
 
@@ -3646,7 +4029,7 @@ class _CanvasPainter extends CustomPainter {
   final List<TextElement> textElements;
   final bool isDark;
   final double fontSize;
-  
+
   _CanvasPainter(this.strokes, this.textElements, this.isDark, this.fontSize);
 
   @override
@@ -3655,19 +4038,19 @@ class _CanvasPainter extends CustomPainter {
     // IMPORTANT: Verify theme detection is correct
     // brightness == Brightness.dark means dark theme → isDark = true
     // brightness == Brightness.light means light theme → isDark = false
-    // 
+    //
     // Light mode (isDark=false): white background, black strokes (should be visible)
     // Dark mode (isDark=true): dark background, white strokes (should be visible)
     final canvasColor = isDark ? const Color(0xFF121212) : Colors.white;
     final textColor = isDark ? Colors.white : Colors.black;
-    
+
     // Always draw canvas background first to ensure it's visible
     // Use a large rect to ensure full coverage even if size is wrong
     final backgroundPaint = Paint()
       ..color = canvasColor
       ..style = PaintingStyle.fill;
     // Draw background covering the entire canvas area
-    final bgRect = size.width > 0 && size.height > 0 
+    final bgRect = size.width > 0 && size.height > 0
         ? Rect.fromLTWH(0, 0, size.width, size.height)
         : const Rect.fromLTWH(0, 0, 20000, 20000);
     canvas.drawRect(bgRect, backgroundPaint);
@@ -3676,7 +4059,7 @@ class _CanvasPainter extends CustomPainter {
     for (final stroke in strokes) {
       final points = stroke.points;
       final strokeColor = stroke.color;
-      
+
       // Draw single point as a dot for immediate feedback
       if (points.length == 1) {
         final point = points.first;
@@ -3689,18 +4072,19 @@ class _CanvasPainter extends CustomPainter {
         canvas.drawCircle(point.position, radius, dotPaint);
         continue;
       }
-      
+
       if (points.length < 2) continue;
-      
+
       final paint = Paint()
         ..color = strokeColor
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
-      
+
       // Use quadratic curves for smoother lines with fewer points
-      final path = Path()..moveTo(points.first.position.dx, points.first.position.dy);
-      
+      final path = Path()
+        ..moveTo(points.first.position.dx, points.first.position.dy);
+
       if (points.length == 2) {
         path.lineTo(points[1].position.dx, points[1].position.dy);
       } else {
@@ -3711,7 +4095,10 @@ class _CanvasPainter extends CustomPainter {
           } else {
             final prev = points[i - 1].position;
             final curr = points[i].position;
-            final mid = Offset((prev.dx + curr.dx) / 2, (prev.dy + curr.dy) / 2);
+            final mid = Offset(
+              (prev.dx + curr.dx) / 2,
+              (prev.dy + curr.dy) / 2,
+            );
             path.quadraticBezierTo(prev.dx, prev.dy, mid.dx, mid.dy);
           }
         }
@@ -3720,7 +4107,7 @@ class _CanvasPainter extends CustomPainter {
           path.lineTo(points.last.position.dx, points.last.position.dy);
         }
       }
-      
+
       // Calculate average pressure more efficiently
       double totalPressure = 0;
       for (final p in points) {
@@ -3728,10 +4115,11 @@ class _CanvasPainter extends CustomPainter {
       }
       // Use penSize as base multiplier, then apply pressure variation
       final baseWidth = stroke.penSize;
-      paint.strokeWidth = baseWidth + (totalPressure / points.length) * (baseWidth * 2.0);
+      paint.strokeWidth =
+          baseWidth + (totalPressure / points.length) * (baseWidth * 2.0);
       canvas.drawPath(path, paint);
     }
-    
+
     // Draw text elements - reuse TextPainter
     final textPainter = TextPainter(
       textDirection: TextDirection.ltr,
@@ -3740,7 +4128,11 @@ class _CanvasPainter extends CustomPainter {
     for (final textElement in textElements) {
       if (textElement.text.isEmpty) continue;
       // Convert markdown to styled TextSpan
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: fontSize);
+      textPainter.text = _markdownToTextSpan(
+        textElement.text,
+        textColor,
+        baseFontSize: fontSize,
+      );
       textPainter.layout();
       textPainter.paint(canvas, textElement.position);
     }
@@ -3749,20 +4141,20 @@ class _CanvasPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
     if (oldDelegate is! _CanvasPainter) return true;
-    
+
     // Always repaint if theme changed - this is critical
     if (oldDelegate.isDark != isDark) return true;
-    
+
     // Always repaint if stroke or text count changed
     if (oldDelegate.strokes.length != strokes.length) return true;
     if (oldDelegate.textElements.length != textElements.length) return true;
-    
+
     // Check if any stroke was modified - check ALL strokes for point count changes
     // This is critical for real-time drawing
-    final minLength = strokes.length < oldDelegate.strokes.length 
-        ? strokes.length 
+    final minLength = strokes.length < oldDelegate.strokes.length
+        ? strokes.length
         : oldDelegate.strokes.length;
-    
+
     // Check all strokes, especially the last one (current stroke being drawn)
     for (var i = 0; i < minLength; i++) {
       if (i >= oldDelegate.strokes.length || i >= strokes.length) return true;
@@ -3770,10 +4162,10 @@ class _CanvasPainter extends CustomPainter {
         return true;
       }
     }
-    
+
     // If we have more strokes than before, definitely repaint
     if (strokes.length > oldDelegate.strokes.length) return true;
-    
+
     return false;
   }
 }
@@ -3786,7 +4178,7 @@ class _MinimapWidget extends StatelessWidget {
   final Rect viewportBounds;
   final bool isDark;
   final Function(Offset) onTap;
-  
+
   const _MinimapWidget({
     required this.size,
     required this.strokes,
@@ -3796,13 +4188,13 @@ class _MinimapWidget extends StatelessWidget {
     required this.isDark,
     required this.onTap,
   });
-  
+
   @override
   Widget build(BuildContext context) {
     final scaleX = size.width / contentBounds.width;
     final scaleY = size.height / contentBounds.height;
     final scale = scaleX < scaleY ? scaleX : scaleY;
-    
+
     return GestureDetector(
       onTapDown: (details) {
         // Convert tap position to canvas coordinates
@@ -3848,7 +4240,7 @@ class _MinimapPainter extends CustomPainter {
   final double scale;
   final bool isDark;
   final double fontSize;
-  
+
   _MinimapPainter({
     required this.strokes,
     required this.textElements,
@@ -3858,7 +4250,7 @@ class _MinimapPainter extends CustomPainter {
     required this.isDark,
     required this.fontSize,
   });
-  
+
   @override
   void paint(Canvas canvas, Size size) {
     // Draw background
@@ -3866,45 +4258,52 @@ class _MinimapPainter extends CustomPainter {
       ..color = isDark ? const Color(0xFF121212) : Colors.white
       ..style = PaintingStyle.fill;
     canvas.drawRect(Offset.zero & size, backgroundPaint);
-    
+
     // Calculate offset to center content in minimap
     final offsetX = -contentBounds.left * scale;
     final offsetY = -contentBounds.top * scale;
     final contentOffset = Offset(offsetX, offsetY);
-    
+
     canvas.save();
     canvas.translate(contentOffset.dx, contentOffset.dy);
     canvas.scale(scale);
-    
+
     // Draw strokes (simplified - just lines, no pressure)
     for (final stroke in strokes) {
       if (stroke.points.length < 2) continue;
-      
+
       final paint = Paint()
         ..color = stroke.color.withOpacity(0.6)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.0 / scale; // Scale down stroke width
-      
+
       final path = Path();
-      path.moveTo(stroke.points.first.position.dx, stroke.points.first.position.dy);
+      path.moveTo(
+        stroke.points.first.position.dx,
+        stroke.points.first.position.dy,
+      );
       for (var i = 1; i < stroke.points.length; i++) {
         path.lineTo(stroke.points[i].position.dx, stroke.points[i].position.dy);
       }
       canvas.drawPath(path, paint);
     }
-    
+
     // Draw text elements (simplified - just rectangles)
     final textColor = isDark ? Colors.white : Colors.black;
     final textPaint = Paint()
       ..color = textColor.withOpacity(0.4)
       ..style = PaintingStyle.fill;
-    
+
     final textPainter = TextPainter(textDirection: TextDirection.ltr);
     for (final textElement in textElements) {
       if (textElement.text.isEmpty) continue;
-      textPainter.text = _markdownToTextSpan(textElement.text, textColor, baseFontSize: fontSize);
+      textPainter.text = _markdownToTextSpan(
+        textElement.text,
+        textColor,
+        baseFontSize: fontSize,
+      );
       textPainter.layout();
-      
+
       final textRect = Rect.fromLTWH(
         textElement.position.dx,
         textElement.position.dy,
@@ -3913,9 +4312,9 @@ class _MinimapPainter extends CustomPainter {
       );
       canvas.drawRect(textRect, textPaint);
     }
-    
+
     canvas.restore();
-    
+
     // Draw viewport indicator
     final viewportPaint = Paint()
       ..color = Colors.blue.withOpacity(0.3)
@@ -3924,7 +4323,7 @@ class _MinimapPainter extends CustomPainter {
       ..color = Colors.blue
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.0;
-    
+
     // Calculate viewport rectangle in minimap coordinates
     // contentOffset already accounts for -contentBounds.left * scale
     // So we just need to add viewportBounds.left * scale to position it correctly
@@ -3934,11 +4333,11 @@ class _MinimapPainter extends CustomPainter {
       viewportBounds.width * scale,
       viewportBounds.height * scale,
     );
-    
+
     canvas.drawRect(viewportRect, viewportPaint);
     canvas.drawRect(viewportRect, viewportBorderPaint);
   }
-  
+
   @override
   bool shouldRepaint(_MinimapPainter oldDelegate) {
     return oldDelegate.strokes.length != strokes.length ||
@@ -3952,7 +4351,7 @@ class SettingsPage extends StatefulWidget {
   final Future<void> Function(ThemeMode) onThemeModeChanged;
   final VoidCallback? onDatabaseWiped;
   final VoidCallback? onNotesChanged;
-  
+
   const SettingsPage({
     super.key,
     required this.onThemeModeChanged,
@@ -3974,7 +4373,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadThemeMode();
     _syncManager.initialize();
   }
-  
+
   Future<void> _showCloudSyncDialog(BuildContext context) async {
     await showDialog(
       context: context,
@@ -3985,7 +4384,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
     setState(() {}); // Refresh UI after dialog closes
   }
-  
+
   Future<void> _performSync(BuildContext context) async {
     if (_syncManager.currentProvider == null) {
       if (context.mounted) {
@@ -4041,7 +4440,7 @@ class _SettingsPageState extends State<SettingsPage> {
         sortBy: 'id',
         filterTags: null,
       );
-      
+
       final localNotesForSync = <Map<String, dynamic>>[];
       for (final note in allNotes) {
         final noteId = note['id'] as int;
@@ -4056,9 +4455,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
       // Prepare local folders for sync
       final allFolders = await DatabaseHelper.instance.getAllFolders();
-      
+
       // Perform folder sync first (so folders exist when notes are synced)
-      if (_syncManager.currentProvider != null && 
+      if (_syncManager.currentProvider != null &&
           await _syncManager.currentProvider!.isConfigured()) {
         try {
           await _syncManager.currentProvider!.syncFolders(
@@ -4088,21 +4487,28 @@ class _SettingsPageState extends State<SettingsPage> {
           // Update existing note
           final note = noteData['note'] as Map<String, dynamic>?;
           final canvas = noteData['canvas'] as Map<String, dynamic>?;
-          
+
           if (note == null || canvas == null) {
             return;
           }
-          
+
           // Update note title if changed
           final titleValue = note['title'];
           if (titleValue != null) {
-            await DatabaseHelper.instance.updateNoteTitle(noteId, titleValue.toString());
+            await DatabaseHelper.instance.updateNoteTitle(
+              noteId,
+              titleValue.toString(),
+            );
           }
-          
+
           // Update tags
-          final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+          final tags =
+              (note['tags'] as List<dynamic>?)
+                  ?.map((t) => t.toString())
+                  .toList() ??
+              [];
           await DatabaseHelper.instance.setNoteTags(noteId, tags);
-          
+
           // Update canvas data
           final strokesData = canvas['strokes'] as List<dynamic>?;
           final strokes = strokesData != null
@@ -4110,7 +4516,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   if (s is Map<String, dynamic>) {
                     return Stroke.fromJson(s);
                   } else if (s is String) {
-                    return Stroke.fromJson(jsonDecode(s) as Map<String, dynamic>);
+                    return Stroke.fromJson(
+                      jsonDecode(s) as Map<String, dynamic>,
+                    );
                   }
                   return Stroke.fromJson(s as Map<String, dynamic>);
                 }).toList()
@@ -4135,49 +4543,64 @@ class _SettingsPageState extends State<SettingsPage> {
             }
           }
           final scale = (canvas['scale'] as num?)?.toDouble() ?? 1.0;
-          
+
           final canvasData = NoteCanvasData(
             strokes: strokes,
             textElements: textElements,
             matrix: matrix,
             scale: scale,
           );
-          
+
           await DatabaseHelper.instance.saveCanvasData(noteId, canvasData);
         },
         onNoteCreated: (noteData) async {
           // Create new note from remote using importNote
           final note = noteData['note'] as Map<String, dynamic>?;
           final canvas = noteData['canvas'] as Map<String, dynamic>?;
-          
+
           if (note == null || canvas == null) {
-            print('Sync: Warning - noteData missing note or canvas field in onNoteCreated');
+            print(
+              'Sync: Warning - noteData missing note or canvas field in onNoteCreated',
+            );
             return;
           }
-          
+
           // Check if note with this ID already exists
           final remoteNoteId = note['id'];
           int? noteId;
-          
+
           if (remoteNoteId != null) {
-            noteId = remoteNoteId is int ? remoteNoteId : int.tryParse(remoteNoteId.toString());
+            noteId = remoteNoteId is int
+                ? remoteNoteId
+                : int.tryParse(remoteNoteId.toString());
             if (noteId != null) {
-              final existingNote = await DatabaseHelper.instance.getNote(noteId);
-              
+              final existingNote = await DatabaseHelper.instance.getNote(
+                noteId,
+              );
+
               if (existingNote != null) {
                 // Note already exists, update it instead of creating duplicate
-                print('Sync: Note $noteId already exists locally, updating instead of creating duplicate');
-                
+                print(
+                  'Sync: Note $noteId already exists locally, updating instead of creating duplicate',
+                );
+
                 // Update note title if changed
                 final titleValue = note['title'];
                 if (titleValue != null) {
-                  await DatabaseHelper.instance.updateNoteTitle(noteId, titleValue.toString());
+                  await DatabaseHelper.instance.updateNoteTitle(
+                    noteId,
+                    titleValue.toString(),
+                  );
                 }
-                
+
                 // Update tags
-                final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+                final tags =
+                    (note['tags'] as List<dynamic>?)
+                        ?.map((t) => t.toString())
+                        .toList() ??
+                    [];
                 await DatabaseHelper.instance.setNoteTags(noteId, tags);
-                
+
                 // Update canvas data
                 final strokesData = canvas['strokes'] as List<dynamic>?;
                 final strokes = strokesData != null
@@ -4185,12 +4608,15 @@ class _SettingsPageState extends State<SettingsPage> {
                         if (s is Map<String, dynamic>) {
                           return Stroke.fromJson(s);
                         } else if (s is String) {
-                          return Stroke.fromJson(jsonDecode(s) as Map<String, dynamic>);
+                          return Stroke.fromJson(
+                            jsonDecode(s) as Map<String, dynamic>,
+                          );
                         }
                         return Stroke.fromJson(s as Map<String, dynamic>);
                       }).toList()
                     : <Stroke>[];
-                final textElementsData = canvas['text_elements'] as List<dynamic>?;
+                final textElementsData =
+                    canvas['text_elements'] as List<dynamic>?;
                 final textElements = textElementsData != null
                     ? textElementsData.map<TextElement>((te) {
                         if (te is Map<String, dynamic>) {
@@ -4210,25 +4636,32 @@ class _SettingsPageState extends State<SettingsPage> {
                   }
                 }
                 final scale = (canvas['scale'] as num?)?.toDouble() ?? 1.0;
-                
+
                 final canvasData = NoteCanvasData(
                   strokes: strokes,
                   textElements: textElements,
                   matrix: matrix,
                   scale: scale,
                 );
-                
-                await DatabaseHelper.instance.saveCanvasData(noteId, canvasData);
+
+                await DatabaseHelper.instance.saveCanvasData(
+                  noteId,
+                  canvasData,
+                );
                 return; // Already updated, don't create duplicate
               }
             }
           }
-          
+
           // Note doesn't exist, create it
           noteId = await DatabaseHelper.instance.importNote(noteData);
-          
+
           // Import tags if present
-          final tags = (note['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ?? [];
+          final tags =
+              (note['tags'] as List<dynamic>?)
+                  ?.map((t) => t.toString())
+                  .toList() ??
+              [];
           if (tags.isNotEmpty) {
             await DatabaseHelper.instance.setNoteTags(noteId, tags);
             print('Sync: Imported ${tags.length} tags for note $noteId');
@@ -4244,7 +4677,9 @@ class _SettingsPageState extends State<SettingsPage> {
       // Refresh notes list if any notes were downloaded or updated
       // Always refresh to ensure UI is up to date, even if sync had partial success
       if (result.downloaded > 0 || result.uploaded > 0) {
-        print('Sync: Refreshing notes list (downloaded: ${result.downloaded}, uploaded: ${result.uploaded})');
+        print(
+          'Sync: Refreshing notes list (downloaded: ${result.downloaded}, uploaded: ${result.uploaded})',
+        );
         if (context.mounted && widget.onNotesChanged != null) {
           widget.onNotesChanged!();
         }
@@ -4268,7 +4703,9 @@ class _SettingsPageState extends State<SettingsPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(message),
-            backgroundColor: result.hasError ? Colors.red : (result.hasConflicts ? Colors.orange : Colors.green),
+            backgroundColor: result.hasError
+                ? Colors.red
+                : (result.hasConflicts ? Colors.orange : Colors.green),
             duration: const Duration(seconds: 3),
           ),
         );
@@ -4293,7 +4730,7 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     }
   }
-  
+
   Matrix4 _parseMatrix(List<dynamic> data) {
     if (data.length != 16) return Matrix4.identity();
     return Matrix4.fromList(data.map((e) => e as double).toList());
@@ -4321,7 +4758,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
-    
+
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
@@ -4342,22 +4779,21 @@ class _SettingsPageState extends State<SettingsPage> {
                   value: ThemeMode.system,
                   child: Text('System'),
                 ),
-                DropdownMenuItem(
-                  value: ThemeMode.light,
-                  child: Text('Light'),
-                ),
-                DropdownMenuItem(
-                  value: ThemeMode.dark,
-                  child: Text('Dark'),
-                ),
+                DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
+                DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
               ],
             ),
           ),
           const Divider(),
           ListTile(
             leading: const Icon(Icons.delete_forever, color: Colors.red),
-            title: const Text('Wipe Database', style: TextStyle(color: Colors.red)),
-            subtitle: const Text('Delete all notes and data. This cannot be undone.'),
+            title: const Text(
+              'Wipe Database',
+              style: TextStyle(color: Colors.red),
+            ),
+            subtitle: const Text(
+              'Delete all notes and data. This cannot be undone.',
+            ),
             onTap: () => _showWipeDatabaseDialog(context),
           ),
           const Divider(),
@@ -4405,7 +4841,7 @@ class _SettingsPageState extends State<SettingsPage> {
         return 'Always dark';
     }
   }
-  
+
   Future<void> _showWipeDatabaseDialog(BuildContext context) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -4429,7 +4865,7 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     );
-    
+
     if (confirmed == true && context.mounted) {
       try {
         await DatabaseHelper.instance.wipeDatabase();
@@ -4463,13 +4899,13 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       final exportData = await DatabaseHelper.instance.exportAllNotes();
       final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
-      
+
       // Prompt user for save location
       final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
       final defaultFileName = 'feather_notes_export_$timestamp.json';
-      
+
       String? outputFile;
-      
+
       // Try to use file picker to save file (works on desktop and mobile)
       try {
         outputFile = await FilePicker.platform.saveFile(
@@ -4481,17 +4917,17 @@ class _SettingsPageState extends State<SettingsPage> {
       } catch (e) {
         print('FilePicker save failed, using fallback: $e');
       }
-      
+
       // Fallback to Documents directory if file picker fails or is not available
       if (outputFile == null) {
         final directory = await getApplicationDocumentsDirectory();
         outputFile = '${directory.path}/$defaultFileName';
       }
-      
+
       if (outputFile != null) {
         final file = File(outputFile);
         await file.writeAsString(jsonString);
-        
+
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -4539,7 +4975,9 @@ class _SettingsPageState extends State<SettingsPage> {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Notes imported successfully! Please restart the app.'),
+              content: Text(
+                'Notes imported successfully! Please restart the app.',
+              ),
               duration: Duration(seconds: 3),
             ),
           );
@@ -4557,4 +4995,3 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 }
-

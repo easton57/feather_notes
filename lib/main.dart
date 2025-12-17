@@ -1715,15 +1715,54 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
                       if (noteType == null) return; // User cancelled
 
-                      // Get total note count for proper naming (ignoring filters)
-                      final allNotes = await DatabaseHelper.instance
-                          .getAllNotes(
-                            searchQuery: null,
-                            sortBy: 'id',
-                            filterTags: null,
-                          );
+                      // Prompt for note name
+                      final nameController = TextEditingController();
+                      final noteName = await showDialog<String>(
+                        context: context,
+                        useRootNavigator: false,
+                        barrierDismissible: true,
+                        builder: (context) => AlertDialog(
+                          title: Text(
+                            noteType ? 'New Text Note' : 'New Drawing Note',
+                          ),
+                          content: TextField(
+                            controller: nameController,
+                            autofocus: true,
+                            decoration: const InputDecoration(
+                              hintText: 'Note title',
+                              border: OutlineInputBorder(),
+                            ),
+                            onSubmitted: (value) {
+                              if (value.trim().isNotEmpty) {
+                                Navigator.pop(context, value.trim());
+                              }
+                            },
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Cancel'),
+                            ),
+                            TextButton(
+                              onPressed: () {
+                                if (nameController.text.trim().isNotEmpty) {
+                                  Navigator.pop(
+                                    context,
+                                    nameController.text.trim(),
+                                  );
+                                }
+                              },
+                              child: const Text('Create'),
+                            ),
+                          ],
+                        ),
+                      );
+
+                      if (noteName == null || noteName.isEmpty)
+                        return; // User cancelled
+
                       final noteId = await DatabaseHelper.instance.createNote(
-                        'Note ${allNotes.length + 1}',
+                        noteName,
                         isTextOnly: noteType,
                       );
                       // Load the new note's data from database (even though it's empty, ensures consistency)

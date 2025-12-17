@@ -366,6 +366,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 details.globalPosition,
               );
             },
+            onSecondaryTapDown: (details) {
+              _showFolderContextMenu(
+                context,
+                folderId,
+                folder['name'] as String,
+                details.globalPosition,
+              );
+            },
             child: ExpansionTile(
               title: Row(
                 children: [
@@ -426,6 +434,17 @@ class _NotesHomePageState extends State<NotesHomePage> {
           await Haptics.vibrate(HapticsType.success);
         }
 
+        _showNoteContextMenu(
+          context,
+          i,
+          noteId,
+          note['title'] as String,
+          noteTags,
+          note['folder_id'] as int?,
+          details.globalPosition,
+        );
+      },
+      onSecondaryTapDown: (details) {
         _showNoteContextMenu(
           context,
           i,

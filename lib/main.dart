@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:convert';
 import 'dart:io';
+import 'package:haptic_feedback/haptic_feedback.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -352,7 +353,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
           final isExpanded = _expandedFolders.contains(folderId);
 
           return GestureDetector(
-            onLongPressStart: (details) {
+            onLongPressStart: (details) async {
+              final canVibrate = await Haptics.canVibrate();
+              if (canVibrate) {
+                await Haptics.vibrate(HapticsType.success);
+              }
+
               _showFolderContextMenu(
                 context,
                 folderId,
@@ -414,7 +420,12 @@ class _NotesHomePageState extends State<NotesHomePage> {
     final noteTags = note['tags'] as List<String>? ?? [];
 
     return GestureDetector(
-      onLongPressStart: (details) {
+      onLongPressStart: (details) async {
+        final canVibrate = await Haptics.canVibrate();
+        if (canVibrate) {
+          await Haptics.vibrate(HapticsType.success);
+        }
+
         _showNoteContextMenu(
           context,
           i,

@@ -1392,9 +1392,14 @@ class _NotesHomePageState extends State<NotesHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final toolbarColor = colorScheme.surfaceVariant;
+    final toolbarOnColor = colorScheme.onSurfaceVariant;
+
     return Scaffold(
       key: _scaffoldKey,
-      backgroundColor: Theme.of(context).canvasColor,
+      backgroundColor: theme.canvasColor,
       drawer: Drawer(
         child: Column(
           children: [
@@ -1649,7 +1654,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: toolbarColor,
                   child: IconButton(
                     icon: const Icon(Icons.menu),
                     onPressed: () => _scaffoldKey.currentState?.openDrawer(),
@@ -1661,7 +1666,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: toolbarColor,
                   child: IconButton(
                     icon: const Icon(Icons.add),
                     tooltip: 'Add Note',
@@ -1750,7 +1755,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: toolbarColor,
                   child: InkWell(
                     onTap: () {
                       if (!_isLoading &&
@@ -1775,7 +1780,7 @@ class _NotesHomePageState extends State<NotesHomePage> {
                                       ? notes[selectedIndex]['title'] as String
                                       : 'Infinite Notes'),
                             style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(color: Colors.white),
+                                ?.copyWith(color: toolbarOnColor),
                           ),
                         ),
                       ),
@@ -2376,6 +2381,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
     // Get theme brightness directly from context and track changes
     final brightness = Theme.of(context).brightness;
     final isDark = brightness == Brightness.dark;
+    final colorScheme = Theme.of(context).colorScheme;
+    final toolbarColor = colorScheme.surfaceVariant;
 
     // Initialize color based on theme if not set
     if (_selectedColor == Colors.black && isDark) {
@@ -2941,7 +2948,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
               Material(
                 elevation: 4,
                 borderRadius: BorderRadius.circular(8),
-                color: Colors.grey[700],
+                color: toolbarColor,
                 child: IconButton(
                   icon: Icon(_showToolMenu ? Icons.close : Icons.build),
                   tooltip: _showToolMenu ? 'Close Toolbox' : 'Open Toolbox',
@@ -2955,7 +2962,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: toolbarColor,
                   child: IconButton(
                     icon: const Icon(Icons.undo),
                     tooltip: 'Undo',
@@ -2966,7 +2973,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                 Material(
                   elevation: 4,
                   borderRadius: BorderRadius.circular(8),
-                  color: Colors.grey[700],
+                  color: toolbarColor,
                   child: IconButton(
                     icon: const Icon(Icons.redo),
                     tooltip: 'Redo',
@@ -2980,7 +2987,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     borderRadius: BorderRadius.circular(8),
                     color: _eraserMode
                         ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                        : Colors.grey[700],
+                        : toolbarColor,
                     child: IconButton(
                       icon: const Icon(Icons.cleaning_services),
                       tooltip: _eraserMode ? 'Eraser (Active)' : 'Eraser',
@@ -2995,7 +3002,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                   borderRadius: BorderRadius.circular(8),
                   color: _textMode && !_textOnlyMode
                       ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                      : Colors.grey[700],
+                      : toolbarColor,
                   child: IconButton(
                     icon: const Icon(Icons.text_fields),
                     tooltip: _textMode && !_textOnlyMode
@@ -3022,7 +3029,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     borderRadius: BorderRadius.circular(8),
                     color: _showColorPicker
                         ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                        : Colors.grey[700],
+                        : toolbarColor,
                     child: IconButton(
                       icon: const Icon(Icons.palette),
                       tooltip: _showColorPicker
@@ -3039,7 +3046,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     borderRadius: BorderRadius.circular(8),
                     color: _showPenSizeControl
                         ? Theme.of(context).colorScheme.primary.withOpacity(0.3)
-                        : Colors.grey[700],
+                        : toolbarColor,
                     child: IconButton(
                       icon: const Icon(Icons.edit),
                       tooltip: _showPenSizeControl
@@ -3056,7 +3063,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                     Material(
                       elevation: 4,
                       borderRadius: BorderRadius.circular(8),
-                      color: Colors.grey[700],
+                      color: toolbarColor,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 12,
@@ -3486,7 +3493,7 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                         decoration: BoxDecoration(
                           color: Theme.of(context).colorScheme.surface,
                           border: Border.all(
-                            color: Colors.grey[700]!,
+                            color: colorScheme.outline,
                             width: 2,
                           ),
                           borderRadius: BorderRadius.circular(4),
@@ -3561,8 +3568,8 @@ class _InfiniteCanvasState extends State<InfiniteCanvas> {
                             ElevatedButton(
                               onPressed: _submitText,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.grey[700]!,
-                                foregroundColor: Colors.white,
+                                backgroundColor: colorScheme.primary,
+                                foregroundColor: colorScheme.onPrimary,
                                 padding: const EdgeInsets.symmetric(
                                   vertical: 8,
                                 ),
@@ -4815,16 +4822,6 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('Cloud Sync'),
             subtitle: const Text('Configure sync provider and frequency'),
             onTap: () => _showCloudSyncDialog(context),
-          ),
-          const ListTile(
-            leading: Icon(Icons.brush),
-            title: Text('Drawing Settings'),
-            subtitle: Text('Brush width, color, stylus behavior'),
-          ),
-          const ListTile(
-            leading: Icon(Icons.crop_free),
-            title: Text('Canvas Settings'),
-            subtitle: Text('Infinite canvas options and transforms'),
           ),
         ],
       ),

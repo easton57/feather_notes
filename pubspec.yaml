@@ -49,6 +49,7 @@ dependencies:
   googleapis: ^15.0.0
   markdown: ^7.0.2
   haptic_feedback: ^0.6.4+2
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

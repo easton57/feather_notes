@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:haptic_feedback/haptic_feedback.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math_64.dart' as vm;
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'database_helper.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
@@ -4963,34 +4965,70 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _exportNotes(BuildContext context) async {
     try {
+      // Note: On Android 10+, file_picker uses SAF (Storage Access Framework)
+      // which doesn't require storage permissions. SAF handles file access automatically.
+      // We don't need to request permissions for file_picker operations.
+
       final exportData = await DatabaseHelper.instance.exportAllNotes();
       final jsonString = const JsonEncoder.withIndent('  ').convert(exportData);
+      final jsonBytes = utf8.encode(jsonString);
 
-      // Prompt user for save location
-      final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
-      final defaultFileName = 'feather_notes_export_$timestamp.json';
-
+      // On Android/iOS, use saveFile with bytes (required for these platforms)
+      // On other platforms, use directory picker
       String? outputFile;
-
-      // Try to use file picker to save file (works on desktop and mobile)
-      try {
+      
+      if (Platform.isAndroid || Platform.isIOS) {
+        // Use saveFile on Android/iOS for proper SAF handling
+        // Bytes are required on these platforms
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+        final defaultFileName = 'feather_notes_export_$timestamp.json';
+        
         outputFile = await FilePicker.platform.saveFile(
           dialogTitle: 'Save export file',
           fileName: defaultFileName,
           type: FileType.custom,
           allowedExtensions: ['json'],
+          bytes: Uint8List.fromList(jsonBytes),
         );
-      } catch (e) {
-        print('FilePicker save failed, using fallback: $e');
-      }
 
-      // Fallback to Documents directory if file picker fails or is not available
-      if (outputFile == null) {
-        final directory = await getApplicationDocumentsDirectory();
-        outputFile = '${directory.path}/$defaultFileName';
-      }
+        if (outputFile != null && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Notes exported successfully'),
+              duration: const Duration(seconds: 5),
+            ),
+          );
+        } else if (outputFile == null && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Export cancelled'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      } else {
+        // On other platforms, use directory picker
+        String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: 'Select folder to save export',
+        );
 
-      if (outputFile != null) {
+        if (selectedDirectory == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Export cancelled'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Generate filename with timestamp
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+        final defaultFileName = 'feather_notes_export_$timestamp.json';
+        outputFile = path.join(selectedDirectory, defaultFileName);
+
         final file = File(outputFile);
         await file.writeAsString(jsonString);
 
@@ -4999,15 +5037,6 @@ class _SettingsPageState extends State<SettingsPage> {
             SnackBar(
               content: Text('Notes exported to: ${file.path}'),
               duration: const Duration(seconds: 5),
-            ),
-          );
-        }
-      } else {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Export cancelled'),
-              backgroundColor: Colors.orange,
             ),
           );
         }
@@ -5026,9 +5055,39 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _importNotes(BuildContext context) async {
     try {
+      // Note: On Android 10+, file_picker uses SAF (Storage Access Framework)
+      // which doesn't require storage permissions. SAF handles file access automatically.
+      // We don't need to request permissions for file_picker operations.
+
+      // On Android, directly use pickFiles (SAF handles directory selection)
+      // On other platforms, optionally select directory first
+      String? selectedDirectory;
+      
+      if (!Platform.isAndroid) {
+        // On non-Android platforms, optionally select directory first
+        selectedDirectory = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: 'Select folder containing import file',
+        );
+
+        if (selectedDirectory == null) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Import cancelled'),
+                backgroundColor: Colors.orange,
+              ),
+            );
+          }
+          return;
+        }
+      }
+
+      // Allow user to pick a file
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['json'],
+        dialogTitle: 'Select JSON file to import',
+        initialDirectory: selectedDirectory,
       );
 
       if (result != null && result.files.single.path != null) {
@@ -5038,11 +5097,16 @@ class _SettingsPageState extends State<SettingsPage> {
 
         await DatabaseHelper.instance.importAllNotes(importData);
 
+        // Refresh the notes list to show imported notes immediately
+        if (widget.onNotesChanged != null) {
+          widget.onNotesChanged!();
+        }
+
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Notes imported successfully! Please restart the app.',
+                'Notes imported successfully!',
               ),
               duration: Duration(seconds: 3),
             ),

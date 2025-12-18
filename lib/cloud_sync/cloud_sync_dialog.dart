@@ -96,6 +96,11 @@ class _CloudSyncDialogState extends State<CloudSyncDialog> {
           _isConfigured = config['isAuthenticated'] == true;
         }
       }
+    } else {
+      // No provider configured - sync is off
+      _selectedProviderId = 'off';
+      _selectedProvider = null;
+      _isConfigured = false;
     }
     setState(() {});
   }
@@ -160,21 +165,66 @@ class _CloudSyncDialogState extends State<CloudSyncDialog> {
               value: _selectedProviderId,
               isExpanded: true,
               hint: const Text('Select a provider'),
-              items: widget.syncManager.getAvailableProviders().map((provider) {
-                return DropdownMenuItem<String>(
-                  value: provider.id,
-                  child: Text(provider.name),
-                );
-              }).toList(),
-              onChanged: (value) {
-                setState(() {
-                  _selectedProviderId = value;
-                  _selectedProvider = computedSelectedProvider;
-                  _isConfigured = false;
-                });
+              items: [
+                const DropdownMenuItem<String>(
+                  value: 'off',
+                  child: Text('Off'),
+                ),
+                ...widget.syncManager.getAvailableProviders().map((provider) {
+                  return DropdownMenuItem<String>(
+                    value: provider.id,
+                    child: Text(provider.name),
+                  );
+                }),
+              ],
+              onChanged: (value) async {
+                if (value == 'off') {
+                  // Turn off sync
+                  final confirmed = await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: const Text('Turn Off Sync'),
+                      content: const Text('Are you sure you want to turn off cloud sync? This will disconnect the current provider and stop all syncing.'),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: const Text('Turn Off'),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (confirmed == true) {
+                    await widget.syncManager.disconnect();
+                    if (mounted) {
+                      setState(() {
+                        _selectedProviderId = 'off';
+                        _selectedProvider = null;
+                        _isConfigured = false;
+                      });
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Cloud sync turned off'),
+                          backgroundColor: Colors.orange,
+                        ),
+                      );
+                    }
+                  }
+                } else {
+                  setState(() {
+                    _selectedProviderId = value;
+                    _selectedProvider = computedSelectedProvider;
+                    _isConfigured = false;
+                  });
+                }
               },
             ),
-            if (computedSelectedProvider != null) ...[
+            if (computedSelectedProvider != null && _selectedProviderId != 'off') ...[
               const SizedBox(height: 16),
               // Nextcloud configuration
               if (computedSelectedProvider.id == 'nextcloud') ...[
@@ -368,7 +418,7 @@ class _CloudSyncDialogState extends State<CloudSyncDialog> {
           ],
         ),
       ),
-      actions: [
+            actions: [
         // Use Column with two Rows to force two rows on Android
         Column(
           mainAxisSize: MainAxisSize.min,
@@ -388,7 +438,7 @@ class _CloudSyncDialogState extends State<CloudSyncDialog> {
                         )
                       : const Text('Test Connection'),
                 ),
-                if (computedSelectedProvider != null) ...[
+                if (computedSelectedProvider != null && _selectedProviderId != 'off') ...[
                   const SizedBox(width: 8),
                   TextButton(
                     onPressed: _saveConfiguration,

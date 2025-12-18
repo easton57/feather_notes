@@ -601,7 +601,27 @@ class DatabaseHelper {
     final note = await getNote(noteId);
     if (note == null) throw Exception('Note not found');
 
-    final canvasData = await loadCanvasData(noteId);
+    // Get is_text_only - handle both int (from DB) and bool (from migration)
+    final isTextOnlyValue = note['is_text_only'];
+    final isTextOnly = isTextOnlyValue is bool 
+        ? isTextOnlyValue 
+        : (isTextOnlyValue as int? ?? 0) == 1;
+    
+    final textContent = await getTextContent(noteId);
+    
+    // Only load canvas data for non-text-only notes
+    NoteCanvasData? canvasData;
+    if (!isTextOnly) {
+      canvasData = await loadCanvasData(noteId);
+    } else {
+      // For text-only notes, use empty canvas data
+      canvasData = NoteCanvasData(
+        strokes: [],
+        textElements: [],
+        matrix: Matrix4.identity(),
+        scale: 1.0,
+      );
+    }
 
     return {
       'version': '1.0',
@@ -611,6 +631,8 @@ class DatabaseHelper {
         'created_at': note['created_at'],
         'modified_at': note['modified_at'],
         'folder_id': note['folder_id'], // Include folder_id for sync
+        'is_text_only': isTextOnly, // Always include, even if false
+        'text_content': textContent, // Include text content, null if empty
       },
       'canvas': {
         'strokes': canvasData.strokes.map((s) => _strokeToJson(s)).toList(),
@@ -670,6 +692,14 @@ class DatabaseHelper {
     final modifiedAt = note['modified_at'] as int? ?? now;
     final folderId = note['folder_id'] as int?;
     
+    // Handle is_text_only - can be bool (from export) or int (from old exports)
+    final isTextOnlyValue = note['is_text_only'];
+    final isTextOnly = isTextOnlyValue is bool
+        ? isTextOnlyValue
+        : (isTextOnlyValue is int ? (isTextOnlyValue == 1) : false);
+    
+    final textContent = note['text_content'] as String?;
+    
     if (noteId != null) {
       // Insert with specific ID, using replace conflict algorithm in case it already exists
       noteId = await db.insert(
@@ -680,6 +710,8 @@ class DatabaseHelper {
           'created_at': createdAt,
           'modified_at': modifiedAt,
           'folder_id': folderId,
+          'is_text_only': isTextOnly ? 1 : 0,
+          'text_content': textContent,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -690,19 +722,23 @@ class DatabaseHelper {
         'created_at': createdAt,
         'modified_at': modifiedAt,
         'folder_id': folderId,
+        'is_text_only': isTextOnly ? 1 : 0,
+        'text_content': textContent,
       });
     }
     
-    // Initialize or update canvas state
-    await db.insert(
-      'canvas_state',
-      {
-        'note_id': noteId,
-        'matrix_data': _matrixToJson(Matrix4.identity()),
-        'scale': 1.0,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    // Only initialize canvas state for non-text-only notes
+    if (!isTextOnly) {
+      await db.insert(
+        'canvas_state',
+        {
+          'note_id': noteId,
+          'matrix_data': _matrixToJson(Matrix4.identity()),
+          'scale': 1.0,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
 
     // Reconstruct canvas data
     final strokesData = canvas['strokes'];
@@ -747,14 +783,17 @@ class DatabaseHelper {
     final scaleValue = canvas['scale'];
     final scale = scaleValue != null ? (scaleValue as num).toDouble() : 1.0;
 
-    final canvasData = NoteCanvasData(
-      strokes: strokes,
-      textElements: textElements,
-      matrix: matrix,
-      scale: scale,
-    );
+    // Only save canvas data for non-text-only notes
+    if (!isTextOnly) {
+      final canvasData = NoteCanvasData(
+        strokes: strokes,
+        textElements: textElements,
+        matrix: matrix,
+        scale: scale,
+      );
 
-    await saveCanvasData(noteId, canvasData);
+      await saveCanvasData(noteId, canvasData);
+    }
 
     return noteId;
   }

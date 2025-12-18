@@ -61,31 +61,49 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
           : ListView(
               padding: const EdgeInsets.all(16.0),
               children: [
-                // Current provider info
+                // Current provider info or Off status
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              provider != null ? Icons.cloud : Icons.cloud_off,
+                              size: 24,
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              provider != null ? provider.name : 'Cloud Sync Off',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          provider != null
+                              ? 'Status: ${_getStatusText()}'
+                              : 'Cloud sync is currently disabled',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                
+                // Turn off sync button (if sync is enabled)
                 if (provider != null) ...[
                   Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.cloud, size: 24),
-                              const SizedBox(width: 8),
-                              Text(
-                                provider.name,
-                                style: Theme.of(context).textTheme.titleLarge,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Status: ${_getStatusText()}',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                        ],
-                      ),
+                    color: Colors.red.shade50,
+                    child: ListTile(
+                      leading: const Icon(Icons.cloud_off, color: Colors.red),
+                      title: const Text('Turn Off Sync'),
+                      subtitle: const Text('Disconnect and disable cloud sync'),
+                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                      onTap: () => _showTurnOffDialog(context),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -240,6 +258,42 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         return 'Error: ${widget.syncManager.lastError ?? "Unknown"}';
       case SyncStatus.conflict:
         return 'Conflicts detected';
+    }
+  }
+
+  Future<void> _showTurnOffDialog(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Turn Off Sync'),
+        content: const Text(
+          'Are you sure you want to turn off cloud sync? This will disconnect the current provider, stop all syncing, and clear sync configuration.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Turn Off'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await widget.syncManager.disconnect();
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Cloud sync turned off'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     }
   }
 

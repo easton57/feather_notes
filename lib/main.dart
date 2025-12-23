@@ -1606,16 +1606,24 @@ class _NotesHomePageState extends State<NotesHomePage> {
                                   }
 
                                   // Use FutureBuilder to load text content before showing editor
+                                  // Key ensures FutureBuilder rebuilds when noteId changes
                                   return FutureBuilder<String?>(
+                                    key: ValueKey(
+                                      noteId,
+                                    ), // Force rebuild when note changes
                                     future: DatabaseHelper.instance
                                         .getTextContent(noteId),
                                     builder: (context, snapshot) {
                                       // Update controller with loaded text
-                                      if (snapshot.hasData &&
+                                      // Always update when snapshot completes, even if data is null
+                                      if (snapshot.connectionState ==
+                                              ConnectionState.done &&
                                           _textContentControllers.containsKey(
                                             noteId,
                                           )) {
                                         final textContent = snapshot.data ?? '';
+                                        // Always update the controller to ensure it matches the database
+                                        // This prevents showing stale text from previous notes
                                         if (_textContentControllers[noteId]!
                                                 .text !=
                                             textContent) {
@@ -1816,6 +1824,18 @@ class _NotesHomePageState extends State<NotesHomePage> {
                         // Ensure canvas data is set for drawing notes
                         if (!noteType && !_noteCanvasData.containsKey(noteId)) {
                           _noteCanvasData[noteId] = NoteCanvasData();
+                        }
+                        // For text-only notes, initialize and clear the text controller
+                        if (noteType) {
+                          if (!_textContentControllers.containsKey(noteId)) {
+                            _textContentControllers[noteId] =
+                                TextEditingController();
+                          } else {
+                            // Clear any existing text to prevent duplication
+                            _textContentControllers[noteId]!.text = '';
+                          }
+                          _hasTextContent[noteId] = false;
+                          _textOnlyMode[noteId] = true;
                         }
                       });
                     },
@@ -4976,13 +4996,13 @@ class _SettingsPageState extends State<SettingsPage> {
       // On Android/iOS, use saveFile with bytes (required for these platforms)
       // On other platforms, use directory picker
       String? outputFile;
-      
+
       if (Platform.isAndroid || Platform.isIOS) {
         // Use saveFile on Android/iOS for proper SAF handling
         // Bytes are required on these platforms
         final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
         final defaultFileName = 'feather_notes_export_$timestamp.json';
-        
+
         outputFile = await FilePicker.platform.saveFile(
           dialogTitle: 'Save export file',
           fileName: defaultFileName,
@@ -5062,7 +5082,7 @@ class _SettingsPageState extends State<SettingsPage> {
       // On Android, directly use pickFiles (SAF handles directory selection)
       // On other platforms, optionally select directory first
       String? selectedDirectory;
-      
+
       if (!Platform.isAndroid) {
         // On non-Android platforms, optionally select directory first
         selectedDirectory = await FilePicker.platform.getDirectoryPath(
@@ -5105,9 +5125,7 @@ class _SettingsPageState extends State<SettingsPage> {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text(
-                'Notes imported successfully!',
-              ),
+              content: Text('Notes imported successfully!'),
               duration: Duration(seconds: 3),
             ),
           );
